@@ -421,29 +421,64 @@ async def fix_timezone():
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
-        # 각 테이블의 시간 필드를 9시간 더하기
+        # 먼저 현재 데이터 확인
+        cursor.execute("SELECT id, created_at FROM threat_posts LIMIT 3")
+        sample_data = cursor.fetchall()
+        logger.info(f"샘플 데이터: {sample_data}")
+        
+        # 더 강력한 업데이트 쿼리 (형식 상관없이)
         update_queries = [
-            "UPDATE threat_posts SET created_at = datetime(created_at, '+9 hours')",
-            "UPDATE threat_posts SET date = datetime(date, '+9 hours') WHERE date IS NOT NULL AND date != ''",
-            "UPDATE threat_posts SET found_at = datetime(found_at, '+9 hours') WHERE found_at IS NOT NULL AND found_at != ''",
-            "UPDATE threat_iocs SET first_seen = datetime(first_seen, '+9 hours') WHERE first_seen IS NOT NULL",
-            "UPDATE post_relationships SET created_at = datetime(created_at, '+9 hours')",
-            "UPDATE processing_statistics SET processed_at = datetime(processed_at, '+9 hours')"
+            # threat_posts 테이블
+            """UPDATE threat_posts 
+               SET created_at = datetime(julianday(created_at) + 0.375)
+               WHERE created_at IS NOT NULL""",
+            
+            """UPDATE threat_posts 
+               SET date = datetime(julianday(date) + 0.375)
+               WHERE date IS NOT NULL AND date != ''""",
+            
+            """UPDATE threat_posts 
+               SET found_at = datetime(julianday(found_at) + 0.375)
+               WHERE found_at IS NOT NULL AND found_at != ''""",
+            
+            # threat_iocs 테이블
+            """UPDATE threat_iocs 
+               SET first_seen = datetime(julianday(first_seen) + 0.375)
+               WHERE first_seen IS NOT NULL""",
+            
+            # post_relationships 테이블
+            """UPDATE post_relationships 
+               SET created_at = datetime(julianday(created_at) + 0.375)
+               WHERE created_at IS NOT NULL""",
+            
+            # processing_statistics 테이블
+            """UPDATE processing_statistics 
+               SET processed_at = datetime(julianday(processed_at) + 0.375)
+               WHERE processed_at IS NOT NULL"""
         ]
         
-        affected_rows = 0
-        for query in update_queries:
+        total_affected = 0
+        for i, query in enumerate(update_queries):
             cursor.execute(query)
-            affected_rows += cursor.rowcount
-            logger.info(f"실행됨: {query} - {cursor.rowcount}행 수정")
+            affected = cursor.rowcount
+            total_affected += affected
+            logger.info(f"쿼리 {i+1}: {affected}행 수정")
         
         conn.commit()
+        
+        # 수정 후 데이터 확인
+        cursor.execute("SELECT id, created_at FROM threat_posts LIMIT 3")
+        updated_data = cursor.fetchall()
+        logger.info(f"수정 후 데이터: {updated_data}")
+        
         conn.close()
         
         return {
             "success": True, 
-            "message": f"총 {affected_rows}개 레코드의 시간을 KST로 수정했습니다",
-            "affected_rows": affected_rows
+            "message": f"총 {total_affected}개 레코드의 시간을 KST로 수정했습니다",
+            "affected_rows": total_affected,
+            "sample_before": sample_data,
+            "sample_after": updated_data
         }
         
     except Exception as e:
