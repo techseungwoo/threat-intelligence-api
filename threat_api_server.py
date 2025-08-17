@@ -413,7 +413,42 @@ async def health_check():
             "error": str(e),
             "timestamp": datetime.now().isoformat()
         }
-
+@app.post("/api/v1/admin/fix-timezone")
+async def fix_timezone():
+    """기존 데이터의 시간대를 KST로 수정 (1회성)"""
+    try:
+        import sqlite3
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # 각 테이블의 시간 필드를 9시간 더하기
+        update_queries = [
+            "UPDATE threat_posts SET created_at = datetime(created_at, '+9 hours')",
+            "UPDATE threat_posts SET date = datetime(date, '+9 hours') WHERE date IS NOT NULL AND date != ''",
+            "UPDATE threat_posts SET found_at = datetime(found_at, '+9 hours') WHERE found_at IS NOT NULL AND found_at != ''",
+            "UPDATE threat_iocs SET first_seen = datetime(first_seen, '+9 hours') WHERE first_seen IS NOT NULL",
+            "UPDATE post_relationships SET created_at = datetime(created_at, '+9 hours')",
+            "UPDATE processing_statistics SET processed_at = datetime(processed_at, '+9 hours')"
+        ]
+        
+        affected_rows = 0
+        for query in update_queries:
+            cursor.execute(query)
+            affected_rows += cursor.rowcount
+            logger.info(f"실행됨: {query} - {cursor.rowcount}행 수정")
+        
+        conn.commit()
+        conn.close()
+        
+        return {
+            "success": True, 
+            "message": f"총 {affected_rows}개 레코드의 시간을 KST로 수정했습니다",
+            "affected_rows": affected_rows
+        }
+        
+    except Exception as e:
+        logger.error(f"시간대 수정 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"시간대 수정 오류: {str(e)}")
 # =============================================================================
 # 서버 실행 스크립트
 # =============================================================================
