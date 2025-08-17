@@ -63,6 +63,11 @@ class ThreatDataItem(BaseModel):
     date: Optional[str] = None
     threat_type: Optional[str] = None
     platform: Optional[str] = None
+    event_id: Optional[str] = None
+    event_info: Optional[str] = None
+    creator_org: Optional[str] = None
+    event_date: Optional[str] = None
+    pii_data: Optional[Dict[str, Any]] = None
 
 class BulkThreatData(BaseModel):
     """대량 위협정보 데이터"""
@@ -135,6 +140,11 @@ async def upload_bulk_data(data: BulkThreatData):
     A파트, B파트에서 JSON 데이터를 직접 POST로 전송
     """
     try:
+        #소스 타입 검증 
+        valid_sources = ['darkweb', 'telegram', 'misp']  #misp 추가
+        if data.source not in valid_sources:
+            raise HTTPException(status_code=400, detail=f"지원되지 않는 소스 타입: {data.source}")
+        
         logger.info(f"대량 데이터 수신: {len(data.data)}개 항목 (소스: {data.source})")
         
         # 데이터 정제 및 표준화
@@ -255,7 +265,8 @@ async def get_recent_threats(limit: int = 100, source_type: str = None):
         
         if source_type:
             cursor.execute('''
-                SELECT id, title, text, author, found_at, source_type, threat_type
+                SELECT id, title, text, author, found_at, source_type, threat_type, 
+                        event_id, event_info, creator_org
                 FROM threat_posts 
                 WHERE source_type = ?
                 ORDER BY created_at DESC 
@@ -263,7 +274,8 @@ async def get_recent_threats(limit: int = 100, source_type: str = None):
             ''', (source_type, limit))
         else:
             cursor.execute('''
-                SELECT id, title, text, author, found_at, source_type, threat_type
+                SELECT id, title, text, author, found_at, source_type, threat_type,
+                        event_id, event_info, creator_org
                 FROM threat_posts 
                 ORDER BY created_at DESC 
                 LIMIT ?
@@ -282,7 +294,17 @@ async def get_recent_threats(limit: int = 100, source_type: str = None):
                 "found_at": post[4],
                 "source_type": post[5],
                 "threat_type": post[6]
-            })
+            }
+            #misp 데이터인 경우 추가 정보 포함
+            if post[5] == 'misp':
+                result_item.update({
+                    "event_id": post[7],
+                    "event_info": post[8], 
+                    "creator_org": post[9]
+                })
+            
+            results.append(result_item)
+            )
         
         return {
             "success": True,

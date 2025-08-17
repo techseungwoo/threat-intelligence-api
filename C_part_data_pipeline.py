@@ -65,6 +65,10 @@ class ThreatProcessingSystem:
                 platform TEXT,                    -- 플랫폼 정보
                 data_hash TEXT UNIQUE,            -- 중복 검사용 해시
                 created_at TIMESTAMP DEFAULT (datetime('now', 'localtime'))  -- DB 저장 시간
+                event_id TEXT,                  -- 이벤트 ID 
+                event_info TEXT,                -- 이벤트 관련 정보 
+                creator_org TEXT,               -- 게시물 작성 기관 
+                event_date TIMESTAMP            -- 이벤트 발생일     
             )
         ''')
         
@@ -174,7 +178,8 @@ class ThreatProcessingSystem:
             'file_hashes': [],      # 파일 해시값
             'crypto_addresses': [], # 암호화폐 주소
             'leaked_accounts': [],  # 유출된 계정명
-            'phone_numbers': []     # 전화번호
+            'phone_numbers': [],    # 전화번호
+            'personal_name': [],    # 개인 이름 
         }
         
         if not full_text:
@@ -318,6 +323,66 @@ class ThreatProcessingSystem:
                     'value': phone,
                     'context': context,
                     'position': match.start()
+                })
+        
+        # 🆕 PII 데이터에서 IOC 추출 (text에서 PII 패턴 찾기)
+        # PII 패턴: [PII: Name: Jane Doe | Username: j.doe | Email: jane.doe@example.com]
+        pii_pattern = r'\[PII:\s*([^\]]+)\]'
+        pii_match = re.search(pii_pattern, full_text)
+    
+        if pii_match:
+            pii_content = pii_match.group(1)
+        
+            # Name 추출
+            name_pattern = r'Name:\s*([^|]+?)(?:\s*\||$)'
+            name_match = re.search(name_pattern, pii_content)
+            if name_match:
+                name = name_match.group(1).strip()
+                indicators['personal_names'].append({
+                    'value': name,
+                    'context': 'PII 데이터에서 추출된 개인 이름',
+                    'position': pii_match.start(),
+                    'confidence': 0.9,
+                    'source': 'pii'
+                })
+        
+            # Username 추출
+            username_pattern = r'Username:\s*([^|]+?)(?:\s*\||$)'
+            username_match = re.search(username_pattern, pii_content)
+            if username_match:
+                username = username_match.group(1).strip()
+                indicators['leaked_accounts'].append({
+                    'value': username,
+                    'context': 'PII 데이터에서 추출된 계정명',
+                    'position': pii_match.start(),
+                    'confidence': 0.95,
+                    'source': 'pii'
+                })
+            
+            # Email 추출
+            email_pattern = r'Email:\s*([^|]+?)(?:\s*\||$)'
+            email_match = re.search(email_pattern, pii_content)
+            if email_match:
+                email = email_match.group(1).strip().lower()
+                indicators['emails'].append({
+                    'value': email,
+                    'context': 'PII 데이터에서 추출된 이메일',
+                    'position': pii_match.start(),
+                    'confidence': 1.0,
+                    'source': 'pii'
+                })
+            
+            # Phone 추출
+            phone_pattern = r'Phone:\s*([^|]+?)(?:\s*\||$)'
+            phone_match = re.search(phone_pattern, pii_content)
+            if phone_match:
+                phone = phone_match.group(1).strip()
+                indicators['phone_numbers'].append({
+                    'value': phone,
+                    'context': 'PII 데이터에서 추출된 전화번호',
+                    'position': pii_match.start(),
+                    'confidence': 0.8,
+                    'source': 'pii'
                 })
         
         # 중복 제거 및 정렬
@@ -716,7 +781,8 @@ class ThreatProcessingSystem:
             'file_hashes': 'file_hash',
             'crypto_addresses': 'crypto_address',
             'leaked_accounts': 'leaked_account',
-            'phone_numbers': 'phone_number'
+            'phone_numbers': 'phone_number',
+            'personal_names': 'personal_name'  
         }
         
         ioc_count = 0
@@ -807,7 +873,8 @@ class ThreatProcessingSystem:
             'file_hash': 'file_hashes',
             'crypto_address': 'crypto_addresses',
             'leaked_account': 'leaked_accounts',
-            'phone_number': 'phone_numbers'
+            'phone_number': 'phone_numbers',
+            'personal_name': 'personal_names'
         }
         
         iocs = {key: [] for key in type_reverse_mapping.values()}
@@ -1139,7 +1206,11 @@ class MultiFormatThreatNormalizer:
             'author': '',           # 작성자/채널명
             'date': '',             # 작성일/타임스탬프
             'threat_type': '',      # 위협 유형
-            'platform': ''          # 플랫폼 정보 (포럼명/채널명)
+            'platform': '',          # 플랫폼 정보 (포럼명/채널명)
+            'event_id': '',       # 이벤트 ID (고유 식별자)
+            'event_info': '',  # 이벤트 관련 정보 (예: 해시, IOC 등)
+            'creator_org': '',  # 생성 기관/조직
+            'event_date': ''  # 이벤트 발생 날짜
         }
 
         # 소스별 필드 매핑 정의
@@ -1160,7 +1231,7 @@ class MultiFormatThreatNormalizer:
         #다양한 소스의 필드명 매핑 정의
         return {
             'thread_id': [
-                'thread_id', 'Message ID', 'message_id', 'id', 'msg_id', 'post_id'
+                'thread_id', 'Message ID', 'message_id', 'id', 'msg_id', 'post_id', 'event_id'
             ],
             'url': [
                 'url', 'link', 'source_url', 'URL', 'Link'
@@ -1174,7 +1245,7 @@ class MultiFormatThreatNormalizer:
                 'Found At', 'collected_at', 'crawled_at'
             ],
             'title': [
-                'title', 'subject', 'headline', 'message_preview', 'Title'
+                'title', 'subject', 'headline', 'message_preview', 'Title','event_ifo'
             ],
             'text': [
                 'text', 'Content', 'content', 'preview', 'message', 
@@ -1182,11 +1253,11 @@ class MultiFormatThreatNormalizer:
             ],
             'author': [
                 'author', 'Channel', 'channel', 'username', 'user',
-                'Author', 'User', 'Username'
+                'Author', 'User', 'Username', 'creator_org'
             ],
             'date': [
                 'date', 'created_at', 'post_date', 'message_date',
-                'Date', 'Created At', 'Post Date'
+                'Date', 'Created At', 'Post Date', 'event_date'
             ],
             'threat_type': [
                 'threat_type', 'Threat Type', 'category', 'type',
@@ -1194,7 +1265,19 @@ class MultiFormatThreatNormalizer:
             ],
             'platform': [
                 'forum', 'platform', 'source_platform', 'site',
-                'Forum', 'Platform', 'Source'
+                'Forum', 'Platform', 'Source', 'sourcetype'
+            ],
+            'event_id': [
+                'event_id', 'event_id', 'Event ID', 'id'
+            ],
+            'event_info': [
+                'event_info', 'info', 'description'
+            ],
+            'creator_org': [
+                'creator_org', 'organization', 'org'
+            ],
+            'event_date': [
+                'event_date', 'event_timestamp'
             ]
         }
 
@@ -1253,6 +1336,14 @@ class MultiFormatThreatNormalizer:
 
     def detect_source_type(self, data: Dict[str, Any]) -> str:
         #데이터 구조를 분석하여 소스 타입 자동 감지
+        #MISP 감지 로직
+        if 'sourcetype' in data and data['sourcetype'] == 'MISP':
+            return 'misp'
+        if 'event_id' in data and 'creator_org' in data:
+            return 'misp'
+        if 'pii_data' in data and 'event_info' in data:
+            return 'misp'
+        
         # 텔레그램 데이터 특성 확인
         telegram_indicators = [
             'Channel', 'Message ID', 'Threat Type', 'Detected Keywords',
@@ -1368,6 +1459,40 @@ class MultiFormatThreatNormalizer:
             import uuid
             normalized['thread_id'] = str(uuid.uuid4())[:8]
             self.logger.warning(f"thread_id 생성: {normalized['thread_id']}")
+        
+        if source_type == 'misp':
+        
+            # 1. PII 데이터를 text에 추가
+            if 'pii_data' in item and item['pii_data']:
+                pii = item['pii_data']
+                pii_parts = []
+            
+                if pii.get('name'):
+                    pii_parts.append(f"Name: {pii['name']}")
+                if pii.get('username'):
+                    pii_parts.append(f"Username: {pii['username']}")
+                if pii.get('email'):
+                    pii_parts.append(f"Email: {pii['email']}")
+                if pii.get('password'):
+                    pii_parts.append("Password: [REDACTED]")
+                if pii.get('phone'):
+                    pii_parts.append(f"Phone: {pii['phone']}")
+            
+                if pii_parts:
+                    current_text = normalized.get('text', '')
+                    pii_text = ' | '.join(pii_parts)
+                    normalized['text'] = f"{current_text} [PII: {pii_text}]".strip()
+        
+            # 2. MISP 기본 설정
+            normalized['platform'] = 'MISP'
+            normalized['threat_type'] = 'OSINT'
+        
+            # 3. event_info를 title/text에 활용 (비어있는 경우)
+            if item.get('event_info'):
+                if not normalized.get('title'):
+                    normalized['title'] = item['event_info']
+                if not normalized.get('text') or normalized['text'] == '':
+                    normalized['text'] = item['event_info']
         
         return normalized
 
