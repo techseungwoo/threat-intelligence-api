@@ -722,7 +722,7 @@ class ThreatProcessingSystem:
         for ioc_category, db_type in ioc_type_mapping.items():
             for ioc_item in iocs.get(ioc_category, []):
                 cursor.execute('''
-                    INSERT INTO threat_iocs (post_id, ioc_type, ioc_value, context, confidence, created_at)
+                    INSERT INTO threat_iocs (post_id, ioc_type, ioc_value, context, confidence, first_seen)
                     VALUES (?, ?, ?, ?, ?, ?)
                 ''', (
                     post_id, 
