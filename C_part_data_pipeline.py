@@ -64,7 +64,7 @@ class ThreatProcessingSystem:
                 threat_type TEXT,                 -- 위협 유형
                 platform TEXT,                    -- 플랫폼 정보
                 data_hash TEXT UNIQUE,            -- 중복 검사용 해시
-                created_at TIMESTAMP DEFAULT (datetime('now', 'localtime'))  -- DB 저장 시간
+                created_at TIMESTAMP DEFAULT (datetime('now', 'localtime')),  -- DB 저장 시간
                 event_id TEXT,                  -- 이벤트 ID 
                 event_info TEXT,                -- 이벤트 관련 정보 
                 creator_org TEXT,               -- 게시물 작성 기관 
@@ -179,7 +179,7 @@ class ThreatProcessingSystem:
             'crypto_addresses': [], # 암호화폐 주소
             'leaked_accounts': [],  # 유출된 계정명
             'phone_numbers': [],    # 전화번호
-            'personal_name': [],    # 개인 이름 
+            'personal_names': [],    # 개인 이름 
         }
         
         if not full_text:
@@ -1245,7 +1245,7 @@ class MultiFormatThreatNormalizer:
                 'Found At', 'collected_at', 'crawled_at'
             ],
             'title': [
-                'title', 'subject', 'headline', 'message_preview', 'Title','event_ifo'
+                'title', 'subject', 'headline', 'message_preview', 'Title','event_info'
             ],
             'text': [
                 'text', 'Content', 'content', 'preview', 'message', 
