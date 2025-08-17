@@ -605,8 +605,8 @@ class ThreatProcessingSystem:
             cursor.execute('''
                 INSERT INTO threat_posts 
                 (id, source_type, thread_id, url, keyword, found_at, title, text, 
-                 author, date, threat_type, platform, data_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 author, date, threat_type, platform, data_hash, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 post_id, data.get('source_type', ''), data.get('thread_id', ''), 
                 data.get('url', ''), data.get('keyword', ''), data.get('found_at', ''),
@@ -671,8 +671,8 @@ class ThreatProcessingSystem:
             cursor.execute('''
                 INSERT INTO threat_posts 
                 (id, source_type, thread_id, url, keyword, found_at, title, text, 
-                 author, date, threat_type, platform, data_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 author, date, threat_type, platform, data_hash, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 post_id, data.get('source_type', ''), data.get('thread_id', ''), 
                 data.get('url', ''), data.get('keyword', ''), data.get('found_at', ''),
@@ -722,8 +722,8 @@ class ThreatProcessingSystem:
         for ioc_category, db_type in ioc_type_mapping.items():
             for ioc_item in iocs.get(ioc_category, []):
                 cursor.execute('''
-                    INSERT INTO threat_iocs (post_id, ioc_type, ioc_value, context, confidence)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO threat_iocs (post_id, ioc_type, ioc_value, context, confidence, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
                 ''', (
                     post_id, 
                     db_type, 
