@@ -286,7 +286,7 @@ async def get_recent_threats(limit: int = 100, source_type: str = None):
         
         results = []
         for post in posts:
-            results.append({
+            result_item = {  
                 "id": post[0],
                 "title": post[1],
                 "text": post[2][:200] + "..." if len(post[2]) > 200 else post[2],
@@ -294,17 +294,17 @@ async def get_recent_threats(limit: int = 100, source_type: str = None):
                 "found_at": post[4],
                 "source_type": post[5],
                 "threat_type": post[6]
-            }
-            #misp 데이터인 경우 추가 정보 포함
+            }  
+    
+            # 🆕 MISP 데이터인 경우 추가 정보 포함
             if post[5] == 'misp':
                 result_item.update({
                     "event_id": post[7],
                     "event_info": post[8], 
                     "creator_org": post[9]
                 })
-            
+    
             results.append(result_item)
-            )
         
         return {
             "success": True,
