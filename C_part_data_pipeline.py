@@ -11,7 +11,7 @@ import uuid
 from difflib import SequenceMatcher
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 from collections import defaultdict
@@ -36,7 +36,8 @@ class ThreatProcessingSystem:
 
     def get_local_time(self):
         
-        return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        kst = timezone(timedelta(hours=9))
+        return datetime.now(kst).strftime('%Y-%m-%d %H:%M:%S')
 
     # ==========================================================================
     # 데이터베이스 초기화 및 스키마 설계

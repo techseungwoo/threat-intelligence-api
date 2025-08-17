@@ -7,7 +7,7 @@ import json
 import os
 import tempfile
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import logging
 from pathlib import Path
 
@@ -20,6 +20,10 @@ app = FastAPI(
     description="A파트(다크웹), B파트(텔레그램) 데이터를 수집하여 D파트(대시보드)용 통합 DB 제공",
     version="1.0.0"
 )
+def get_kst_time():
+    """한국 시간 반환"""
+    kst = timezone(timedelta(hours=9))
+    return datetime.now(kst).strftime('%Y-%m-%d %H:%M:%S')
 
 # CORS 설정 (다른 파트에서 접근 가능하도록)
 app.add_middleware(
@@ -378,7 +382,7 @@ async def root():
         "service": "위협정보 데이터 정제 API",
         "version": "1.0.0",
         "status": "running",
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": get_kst_time(),
         "endpoints": {
             "A파트_B파트용": {
                 "JSON파일업로드": "/api/v1/data/upload/json",
@@ -405,13 +409,13 @@ async def health_check():
             "status": "healthy",
             "database": "connected",
             "total_posts": stats.get('total_posts', 0),
-            "timestamp": datetime.now().isoformat()
+            "timestamp": get_kst_time()
         }
     except Exception as e:
         return {
             "status": "unhealthy",
             "error": str(e),
-            "timestamp": datetime.now().isoformat()
+            "timestamp": get_kst_time()
         }
 @app.post("/api/v1/admin/fix-timezone")
 async def fix_timezone():
