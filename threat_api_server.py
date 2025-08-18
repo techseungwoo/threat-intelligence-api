@@ -65,7 +65,6 @@ class ThreatDataItem(BaseModel):
     platform: Optional[str] = None
     event_id: Optional[str] = None
     event_info: Optional[str] = None
-    creator_org: Optional[str] = None
     event_date: Optional[str] = None
     pii_data: Optional[Dict[str, Any]] = None
 
@@ -266,7 +265,7 @@ async def get_recent_threats(limit: int = 100, source_type: str = None):
         if source_type:
             cursor.execute('''
                 SELECT id, title, text, author, found_at, source_type, threat_type, 
-                        event_id, event_info, creator_org
+                        event_id, event_info
                 FROM threat_posts 
                 WHERE source_type = ?
                 ORDER BY created_at DESC 
@@ -275,7 +274,7 @@ async def get_recent_threats(limit: int = 100, source_type: str = None):
         else:
             cursor.execute('''
                 SELECT id, title, text, author, found_at, source_type, threat_type,
-                        event_id, event_info, creator_org
+                        event_id, event_info
                 FROM threat_posts 
                 ORDER BY created_at DESC 
                 LIMIT ?
@@ -300,8 +299,7 @@ async def get_recent_threats(limit: int = 100, source_type: str = None):
             if post[5] == 'misp':
                 result_item.update({
                     "event_id": post[7],
-                    "event_info": post[8], 
-                    "creator_org": post[9]
+                    "event_info": post[8]
                 })
     
             results.append(result_item)

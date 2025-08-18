@@ -66,8 +66,7 @@ class ThreatProcessingSystem:
                 data_hash TEXT UNIQUE,            -- 중복 검사용 해시
                 created_at TIMESTAMP DEFAULT (datetime('now', 'localtime')),  -- DB 저장 시간
                 event_id TEXT,                  -- 이벤트 ID 
-                event_info TEXT,                -- 이벤트 관련 정보 
-                creator_org TEXT,               -- 게시물 작성 기관 
+                event_info TEXT,                -- 이벤트 관련 정보                
                 event_date TIMESTAMP            -- 이벤트 발생일     
             )
         ''')
@@ -1209,7 +1208,6 @@ class MultiFormatThreatNormalizer:
             'platform': '',          # 플랫폼 정보 (포럼명/채널명)
             'event_id': '',       # 이벤트 ID (고유 식별자)
             'event_info': '',  # 이벤트 관련 정보 (예: 해시, IOC 등)
-            'creator_org': '',  # 생성 기관/조직
             'event_date': ''  # 이벤트 발생 날짜
         }
 
@@ -1272,9 +1270,6 @@ class MultiFormatThreatNormalizer:
             ],
             'event_info': [
                 'event_info', 'info', 'description'
-            ],
-            'creator_org': [
-                'creator_org', 'organization', 'org'
             ],
             'event_date': [
                 'event_date', 'event_timestamp'
