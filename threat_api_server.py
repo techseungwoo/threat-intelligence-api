@@ -564,7 +564,7 @@ async def create_dummy_data():
 if __name__ == "__main__":
     import uvicorn
     
-    # 데이터베이스 초기화
+    # 데이터베이스 초기화 코드
     threat_processor.init_advanced_database()
     
     print("=== 위협정보 데이터 정제 API 서버 ===")
