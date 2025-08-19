@@ -177,7 +177,52 @@ def normalize_postgresql_item(item: Dict) -> Dict:
         'event_id': item.get('event_id', ''),
         'event_info': item.get('event_info', ''),
         'event_date': item.get('event_date', '')
-    }    
+    }
+
+def search_postgresql_author(author: str, limit: int = 100) -> List[Dict]:
+    """PostgreSQL용 작성자 검색"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        if DB_TYPE == "postgresql":
+            cursor.execute('''
+                SELECT id, title, text, author, found_at, source_type, created_at
+                FROM threat_posts 
+                WHERE author ILIKE %s
+                ORDER BY created_at DESC 
+                LIMIT %s
+            ''', (f'%{author}%', limit))
+        else:
+            cursor.execute('''
+                SELECT id, title, text, author, found_at, source_type, created_at
+                FROM threat_posts 
+                WHERE author LIKE ?
+                ORDER BY created_at DESC 
+                LIMIT ?
+            ''', (f'%{author}%', limit))
+        
+        posts = cursor.fetchall()
+        conn.close()
+        
+        results = []
+        for post in posts:
+            results.append({
+                "id": post[0],
+                "title": post[1],
+                "text": post[2][:200] + "..." if len(post[2]) > 200 else post[2],
+                "author": post[3],
+                "found_at": post[4],
+                "source_type": post[5],
+                "created_at": post[6]
+            })
+        
+        return results
+        
+    except Exception as e:
+        print(f"작성자 검색 오류: {e}")
+        return []
+        
 def init_postgresql_tables():
     """PostgreSQL 테이블 초기화"""
     if DB_TYPE != "postgresql":
@@ -389,10 +434,12 @@ async def upload_single_data(item: ThreatDataItem):
         item_dict = item.dict()
         
         # 정제 및 표준화
-        normalized_item = normalizer.normalize_single_item(item_dict)
-        
-        # 데이터베이스에 저장
-        stats = normalizer.save_to_database([normalized_item])
+        if DB_TYPE == "postgresql":
+            normalized_item = normalize_postgresql_item(item_dict)
+            stats = save_postgresql_data([normalized_item])
+        else:
+            normalized_item = normalizer.normalize_single_item(item_dict)
+            stats = normalizer.save_to_database([normalized_item])
         
         return {
             "success": True,
@@ -433,27 +480,21 @@ async def search_threat_data(request: SearchRequest):
     D파트용 위협정보 검색 API
     """
     try:
-        if request.search_type == "ioc":
-            # IOC 검색
-            results = threat_processor.search_ioc_with_relations(
-                request.query, 
-                ioc_type=None
-            )
-        elif request.search_type == "author":
-            # 작성자 검색
-            results = threat_processor.search_by_author_with_timeline(
-                request.query, 
-                days_back=30
-            )
+        # 🔥 모든 검색을 PostgreSQL 기반으로 통일
+        if request.search_type == "author":
+            results = search_postgresql_author(request.query, request.limit)
+        elif request.search_type == "ioc":
+            # IOC 검색도 기본 텍스트 검색으로 처리
+            results = search_content(request.query, request.limit)
         else:
-            # 일반 텍스트 검색 (제목, 내용)
+            # 일반 텍스트 검색
             results = search_content(request.query, request.limit)
         
         return {
             "success": True,
             "query": request.query,
             "search_type": request.search_type,
-            "result_count": len(results) if isinstance(results, list) else 1,
+            "result_count": len(results),
             "data": results
         }
         
@@ -549,6 +590,12 @@ async def export_database():
     D파트용 데이터베이스 파일 다운로드
     """
     try:
+        if DB_TYPE == "postgresql":
+            raise HTTPException(
+                status_code=400, 
+                detail="PostgreSQL 환경에서는 DB 파일 다운로드를 지원하지 않습니다. 대신 데이터 조회 API를 사용하세요."
+            )
+        
         if os.path.exists(DB_PATH):
             return FileResponse(
                 DB_PATH,
@@ -572,51 +619,69 @@ async def process_uploaded_file(file_path: str, source: str, original_filename: 
     try:
         logger.info(f"백그라운드 처리 시작: {original_filename}")
         
-        # 파일 처리
-        result = normalizer.process_file(file_path, save_to_db=True)
+        if DB_TYPE == "postgresql":
+            # PostgreSQL에서는 백그라운드 파일 처리 미지원
+            logger.warning("PostgreSQL 환경에서는 파일 처리가 제한됩니다")
+            return
+        else:
+            # SQLite에서만 파일 처리
+            result = normalizer.process_file(file_path, save_to_db=True)
+            
+            if result['status'] == 'SUCCESS':
+                logger.info(f"백그라운드 처리 완료: {original_filename} - {result['normalized_count']}개 항목")
+            else:
+                logger.error(f"백그라운드 처리 실패: {original_filename} - {result.get('error', 'Unknown error')}")
         
         # 임시 파일 삭제
         os.unlink(file_path)
-        
-        if result['status'] == 'SUCCESS':
-            logger.info(f"백그라운드 처리 완료: {original_filename} - {result['normalized_count']}개 항목")
-        else:
-            logger.error(f"백그라운드 처리 실패: {original_filename} - {result.get('error', 'Unknown error')}")
             
     except Exception as e:
         logger.error(f"백그라운드 처리 오류 {original_filename}: {e}")
 
 def search_content(query: str, limit: int = 100) -> List[Dict]:
     """
-    제목, 내용에서 텍스트 검색
+    제목, 내용에서 텍스트 검색 (PostgreSQL/SQLite 호환)
     """
-    import sqlite3
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        SELECT id, title, text, author, found_at, source_type
-        FROM threat_posts 
-        WHERE title LIKE ? OR text LIKE ?
-        ORDER BY created_at DESC 
-        LIMIT ?
-    ''', (f'%{query}%', f'%{query}%', limit))
-    
-    posts = cursor.fetchall()
-    conn.close()
-    
-    results = []
-    for post in posts:
-        results.append({
-            "id": post[0],
-            "title": post[1],
-            "text": post[2][:300] + "..." if len(post[2]) > 300 else post[2],
-            "author": post[3],
-            "found_at": post[4],
-            "source_type": post[5]
-        })
-    
-    return results
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        if DB_TYPE == "postgresql":
+            cursor.execute('''
+                SELECT id, title, text, author, found_at, source_type
+                FROM threat_posts 
+                WHERE title ILIKE %s OR text ILIKE %s
+                ORDER BY created_at DESC 
+                LIMIT %s
+            ''', (f'%{query}%', f'%{query}%', limit))
+        else:
+            cursor.execute('''
+                SELECT id, title, text, author, found_at, source_type
+                FROM threat_posts 
+                WHERE title LIKE ? OR text LIKE ?
+                ORDER BY created_at DESC 
+                LIMIT ?
+            ''', (f'%{query}%', f'%{query}%', limit))
+        
+        posts = cursor.fetchall()
+        conn.close()
+        
+        results = []
+        for post in posts:
+            results.append({
+                "id": post[0],
+                "title": post[1],
+                "text": post[2][:300] + "..." if len(post[2]) > 300 else post[2],
+                "author": post[3],
+                "found_at": post[4],
+                "source_type": post[5]
+            })
+        
+        return results
+        
+    except Exception as e:
+        print(f"검색 오류: {e}")
+        return []
 
 # =============================================================================
 # 서버 실행 및 상태 확인
@@ -674,6 +739,11 @@ async def health_check():
 async def fix_timezone():
     """기존 데이터의 시간대를 KST로 수정 (1회성)"""
     try:
+        if DB_TYPE == "postgresql":
+            raise HTTPException(
+                status_code=400, 
+                detail="PostgreSQL 환경에서는 시간대 수정이 지원되지 않습니다. 데이터베이스에서 직접 수정하세요."
+            )
         import sqlite3
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
