@@ -161,23 +161,210 @@ def save_postgresql_data(normalized_data: List[Dict]) -> Dict:
         return {'saved': 0, 'duplicates': 0, 'errors': 1}
 
 def normalize_postgresql_item(item: Dict) -> Dict:
-    """PostgreSQL용 데이터 정규화 함수"""
-    return {
-        'thread_id': item.get('id') or item.get('thread_id') or f"auto-{hash(str(item))}",
-        'source_type': item.get('source_type', ''),
-        'title': str(item.get('title', '')).strip(),
-        'text': str(item.get('text', '')).strip(),
-        'author': str(item.get('author', '')).strip(),
-        'url': str(item.get('url', '')).strip(),
-        'keyword': str(item.get('keyword', '')).strip(),
-        'found_at': item.get('found_at', ''),
-        'date': item.get('date', ''),
-        'threat_type': item.get('threat_type', ''),
-        'platform': item.get('platform', ''),
-        'event_id': item.get('event_id', ''),
-        'event_info': item.get('event_info', ''),
-        'event_date': item.get('event_date', '')
+    """PostgreSQL용 데이터 정규화 함수 (SQLite와 동일한 매핑 적용)"""
+    
+    # SQLite와 동일한 필드 매핑 정의
+    field_mappings = {
+        'thread_id': [
+            'thread_id', 'Message ID', 'message_id', 'id', 'msg_id', 'post_id', 'event_id'
+        ],
+        'url': [
+            'url', 'link', 'source_url', 'URL', 'Link'
+        ],
+        'keyword': [
+            'keyword', 'Detected Keywords', 'detected_keywords', 
+            'keywords', 'search_terms', 'query', 'Keywords'
+        ],
+        'found_at': [
+            'found_at', 'Timestamp', 'timestamp', 'date_collected',
+            'Found At', 'collected_at', 'crawled_at'
+        ],
+        'title': [
+            'title', 'subject', 'headline', 'message_preview', 'Title','event_info'
+        ],
+        'text': [
+            'text', 'Content', 'content', 'preview', 'message', 
+            'description', 'hidden_content', 'Message', 'Text'
+        ],
+        'author': [
+            'author', 'Channel', 'channel', 'username', 'user',
+            'Author', 'User', 'Username', 'creator_org'
+        ],
+        'date': [
+            'date', 'created_at', 'post_date', 'message_date',
+            'Date', 'Created At', 'Post Date', 'event_date'
+        ],
+        'threat_type': [
+            'threat_type', 'Threat Type', 'category', 'type',
+            'Category', 'Type', 'threat_category'
+        ],
+        'platform': [
+            'forum', 'platform', 'source_platform', 'site',
+            'Forum', 'Platform', 'Source', 'sourcetype'
+        ],
+        'event_id': [
+            'event_id', 'event_id', 'Event ID', 'id'
+        ],
+        'event_info': [
+            'event_info', 'info', 'description'
+        ],
+        'event_date': [
+            'event_date', 'event_timestamp'
+        ]
     }
+    
+    def find_matching_field(data: Dict, target_field: str) -> str:
+        """표준 필드에 매핑되는 원본 필드명 찾기"""
+        possible_names = field_mappings.get(target_field, [])
+        
+        for field_name in possible_names:
+            if field_name in data:
+                return field_name
+            
+            # 대소문자 구분 없이 검색
+            for key in data.keys():
+                if key.lower() == field_name.lower():
+                    return key
+        
+        return None
+    
+    def detect_source_type(data: Dict) -> str:
+        """데이터 구조를 분석하여 소스 타입 자동 감지"""
+        # MISP 감지 로직
+        if 'sourcetype' in data and data['sourcetype'] == 'MISP':
+            return 'misp'
+        if 'event_id' in data and 'creator_org' in data:
+            return 'misp'
+        if 'pii_data' in data and 'event_info' in data:
+            return 'misp'
+        
+        # 텔레그램 데이터 특성 확인
+        telegram_indicators = [
+            'Channel', 'Message ID', 'Threat Type', 'Detected Keywords',
+            'channel', 'message_id', 'threat_type', 'detected_keywords'
+        ]
+        
+        # 다크웹 데이터 특성 확인
+        darkweb_indicators = [
+            'forum', 'thread_id', 'has_hidden_content', 'preview',
+            'Forum', 'Thread ID', 'author', 'url'
+        ]
+        
+        telegram_score = sum(1 for indicator in telegram_indicators if indicator in data)
+        darkweb_score = sum(1 for indicator in darkweb_indicators if indicator in data)
+        
+        if telegram_score > darkweb_score:
+            return 'telegram'
+        elif darkweb_score > telegram_score:
+            return 'darkweb'
+        else:
+            # 기본값 또는 추가 휴리스틱 적용
+            if any(indicator in data for indicator in ['Channel', 'Message ID', 'channel']):
+                return 'telegram'
+            elif any(indicator in data for indicator in ['forum', 'thread_id', 'Forum']):
+                return 'darkweb'
+            else:
+                return 'unknown'
+    
+    def clean_text(text: Any) -> str:
+        """텍스트 정제 및 정규화"""
+        if text is None:
+            return ""
+        
+        import re
+        text_str = str(text).strip()
+        
+        # 연속된 공백을 하나로 변환
+        text_str = re.sub(r'\s+', ' ', text_str)
+        # HTML 태그 제거
+        text_str = re.sub(r'<[^>]+>', '', text_str)
+        # 줄바꿈 문자를 공백으로 변환
+        text_str = text_str.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+        
+        return text_str.strip()
+    
+    # 시작: 정규화 처리
+    normalized = {}
+    
+    # 소스 타입 자동 감지
+    source_type = detect_source_type(item)
+    normalized['source_type'] = source_type
+    
+    # 표준 필드들
+    standard_fields = [
+        'thread_id', 'url', 'keyword', 'found_at', 'title', 'text', 
+        'author', 'date', 'threat_type', 'platform', 'event_id', 
+        'event_info', 'event_date'
+    ]
+    
+    # 각 표준 필드에 대해 매핑 수행
+    for standard_field in standard_fields:
+        original_field = find_matching_field(item, standard_field)
+        
+        if original_field:
+            value = item[original_field]
+        else:
+            value = ""
+        
+        # 특별 처리가 필요한 필드들
+        if standard_field in ['text', 'title']:
+            normalized[standard_field] = clean_text(value)
+        elif standard_field == 'keyword':
+            # 여러 키워드가 쉼표로 구분된 경우 처리
+            if value:
+                if isinstance(value, str):
+                    keywords = value.split(',')
+                    normalized[standard_field] = ', '.join([kw.strip() for kw in keywords])
+                else:
+                    normalized[standard_field] = str(value).strip()
+            else:
+                normalized[standard_field] = ""
+        else:
+            normalized[standard_field] = str(value).strip() if value else ""
+    
+    # 소스별 특별 처리
+    if source_type == 'telegram':
+        # 텔레그램의 경우 채널명을 author와 platform 둘 다에 설정
+        if normalized['author']:
+            normalized['platform'] = normalized['author']
+    elif source_type == 'darkweb':
+        # 다크웹의 경우 숨겨진 콘텐츠 정보 추가
+        if 'has_hidden_content' in item and item['has_hidden_content']:
+            hidden_content = item.get('hidden_content', '')
+            if hidden_content:
+                normalized['text'] += f" [Hidden Content: {clean_text(hidden_content)}]"
+    elif source_type == 'misp':
+        # PII 데이터를 text에 추가
+        if 'pii_data' in item and item['pii_data']:
+            pii = item['pii_data']
+            pii_parts = []
+            
+            if pii.get('name'):
+                pii_parts.append(f"Name: {pii['name']}")
+            if pii.get('username'):
+                pii_parts.append(f"Username: {pii['username']}")
+            if pii.get('email'):
+                pii_parts.append(f"Email: {pii['email']}")
+            if pii.get('password'):
+                pii_parts.append("Password: [REDACTED]")
+            if pii.get('phone'):
+                pii_parts.append(f"Phone: {pii['phone']}")
+            
+            if pii_parts:
+                current_text = normalized.get('text', '')
+                pii_text = ' | '.join(pii_parts)
+                normalized['text'] = f"{current_text} [PII: {pii_text}]".strip()
+        
+        # MISP 기본 설정
+        normalized['platform'] = 'MISP'
+        normalized['threat_type'] = 'OSINT'
+    
+    # thread_id가 없는 경우 생성
+    if not normalized['thread_id']:
+        import uuid
+        normalized['thread_id'] = str(uuid.uuid4())[:8]
+    
+    return normalized
 
 def search_postgresql_author(author: str, limit: int = 100) -> List[Dict]:
     """PostgreSQL용 작성자 검색"""
