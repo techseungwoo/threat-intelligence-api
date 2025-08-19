@@ -1150,6 +1150,59 @@ async def debug_db_status():
         }
     except Exception as e:
         return {"error": str(e)}
+    
+@app.post("/api/v1/admin/fix-source-types")
+async def fix_source_types():
+    """기존 데이터의 source_type 수정"""
+    try:
+        if DB_TYPE != "postgresql":
+            raise HTTPException(status_code=400, detail="PostgreSQL 환경에서만 지원됩니다")
+        
+        conn = get_db_connection()
+        updated_count = 0
+        
+        with conn.cursor() as cursor:
+            # source_type이 'unknown'인 데이터 조회
+            cursor.execute('''
+                SELECT id, title, text, author FROM threat_posts 
+                WHERE source_type = 'unknown'
+            ''')
+            
+            posts = cursor.fetchall()
+            
+            for post_id, title, text, author in posts:
+                # 가상의 item 생성해서 소스 타입 감지
+                fake_item = {
+                    'title': title or '',
+                    'text': text or '',
+                    'author': author or '',
+                    'Channel': author,  # 텔레그램 감지용
+                }
+                
+                # 소스 타입 재감지
+                normalized = normalize_postgresql_item(fake_item)
+                new_source_type = normalized['source_type']
+                
+                if new_source_type != 'unknown':
+                    # 업데이트
+                    cursor.execute('''
+                        UPDATE threat_posts 
+                        SET source_type = %s 
+                        WHERE id = %s
+                    ''', (new_source_type, post_id))
+                    updated_count += 1
+        
+        conn.commit()
+        conn.close()
+        
+        return {
+            "success": True,
+            "message": f"{updated_count}개 레코드의 source_type을 수정했습니다",
+            "updated_count": updated_count
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"source_type 수정 오류: {str(e)}")
 # =============================================================================
 # 서버 실행 스크립트
 # =============================================================================
