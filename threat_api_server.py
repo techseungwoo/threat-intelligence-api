@@ -144,29 +144,49 @@ async def upload_bulk_data(data: BulkThreatData):
         if data.source not in valid_sources:
             raise HTTPException(status_code=400, detail=f"지원되지 않는 소스 타입: {data.source}")
         
+        # 🔥 대량 데이터를 작은 배치로 나누기
+        batch_size = 50  # 한 번에 50개씩만 처리
+        total_items = len(data.data)
+
         logger.info(f"대량 데이터 수신: {len(data.data)}개 항목 (소스: {data.source})")
+        logger.info(f"배치 크기: {batch_size}개씩 처리")
         
-        # 데이터 정제 및 표준화
-        normalized_data = []
-        for item in data.data:
-            normalized_item = normalizer.normalize_single_item(item)
-            # 소스 타입 강제 설정 (A파트: darkweb, B파트: telegram)
-            normalized_item['source_type'] = data.source
-            normalized_data.append(normalized_item)
+        all_stats = {'saved': 0, 'duplicates': 0, 'errors': 0}
+
+        for i in range(0, total_items, batch_size):
+            batch_data = data.data[i:i + batch_size]
+            logger.info(f"배치 처리 중: {i+1}-{min(i+batch_size, total_items)}/{total_items}")        
+            
+            # 데이터 정제 및 표준화
+            normalized_data = []
+            for item in batch_data:
+                normalized_item = normalizer.normalize_single_item(item)
+                # 소스 타입 강제 설정 (A파트: darkweb, B파트: telegram)
+                normalized_item['source_type'] = data.source
+                normalized_data.append(normalized_item)
+            
+            # 데이터베이스에 저장 (연관관계 분석 포함)
+            stats = normalizer.save_to_database(normalized_data)
+            all_stats['saved'] += stats.get('saved', 0)
+            all_stats['duplicates'] += stats.get('duplicates', 0)
+            all_stats['errors'] += stats.get('errors', 0)
+
+            if i + batch_size < total_items:
+                await asyncio.sleep(2)
+                logger.info(f"배치 휴식 : 2초")
+                
+            logger.info(f"배치 {i // batch_size + 1} 처리 완료: {stats}")
         
-        # 데이터베이스에 저장 (연관관계 분석 포함)
-        stats = normalizer.save_to_database(normalized_data)
-        
-        logger.info(f"대량 데이터 처리 완료: {stats}")
+        logger.info(f"전체 대량 데이터 처리 완료: {all_stats}")
         
         return ProcessingResponse(
             success=True,
             message="데이터 처리 완료",
-            processed_count=len(normalized_data),
-            new_posts=stats.get('saved', 0),
-            related_posts=0,  # 상세 통계는 별도 API에서 조회
-            duplicates=stats.get('duplicates', 0),
-            errors=stats.get('errors', 0)
+            processed_count=total_items,
+            new_posts=all_stats.get('saved', 0),
+            related_posts=0,
+            duplicates=all_stats.get('duplicates', 0),
+            errors=all_stats.get('errors', 0)
         )
         
     except Exception as e:

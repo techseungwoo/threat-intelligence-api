@@ -538,11 +538,22 @@ class ThreatProcessingSystem:
             try:
                 self.logger.info(f"처리 중: {i+1}/{len(normalized_data)} - {item.get('title', 'Unknown')[:50]}...")
                 
+                if (i+ 1) % 10 == 0:
+                    import time
+                    time.sleep(1)
+                    self.logger.info(f"배치 휴식: {i+1}개 처리 완료")
+
                 # 1. IOC 추출
                 iocs = self.extract_threat_indicators(
                     item.get('text', ''), 
                     item.get('title', '')
                 )
+                
+                if len(iocs) > 0:
+                    total_iocs = sum(len(v) for v in iocs.values())
+                    if total_iocs > 50:
+                        import time
+                        time.sleep(0.5)
                 
                 # 2. 완전 중복 체크
                 if self.is_exact_duplicate(item):
@@ -605,7 +616,7 @@ class ThreatProcessingSystem:
                 AND created_at > datetime('now', '-{} days')
                 AND author = ?
                 ORDER BY created_at DESC
-                LIMIT 1000
+                LIMIT 200
             '''.format(days_back), (new_data.get('source_type', ''), new_data.get('author', '')))
             
             existing_posts = cursor.fetchall()
