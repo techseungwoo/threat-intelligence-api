@@ -51,10 +51,14 @@ else:
     DB_PATH = 'threat_intelligence.db'
 
 # 🔥 DB별 초기화
+# 🔥 DB별 초기화 - 파이프라인 코드 사용으로 간소화
 if DB_TYPE == "postgresql":
-    # PostgreSQL용 - 임시로 None 설정 (나중에 수정)
-    normalizer = None
-    threat_processor = None
+    # PostgreSQL용 - 파이프라인 코드 그대로 사용
+    normalizer = MultiFormatThreatNormalizer(
+        output_folder='api_processed_data',
+        db_path=None  # PostgreSQL 자동 감지
+    )
+    threat_processor = ThreatProcessingSystem(None)  # PostgreSQL 자동 감지
 else:
     # SQLite용 - 기존 방식
     normalizer = MultiFormatThreatNormalizer(
@@ -77,49 +81,7 @@ def get_db_connection():
         print(f"DB 연결 오류: {e}")
         raise e
 
-def get_postgresql_stats():
-    """PostgreSQL용 통계 조회"""
-    try:
-        conn = get_db_connection()
-        
-        # PostgreSQL은 with문 사용
-        with conn.cursor() as cursor:
-            stats = {}
-            
-            # 기본 통계
-            cursor.execute("SELECT COUNT(*) FROM threat_posts")
-            result = cursor.fetchone()
-            stats['total_posts'] = result[0] if result else 0
-            
-            # 소스별 분포
-            cursor.execute("SELECT source_type, COUNT(*) FROM threat_posts GROUP BY source_type")
-            stats['posts_by_source'] = dict(cursor.fetchall())
-            
-            # 기본값 설정
-            stats.update({
-                'total_iocs': 0,
-                'total_relationships': 0,
-                'posts_by_threat_type': {},
-                'iocs_by_type': {},
-                'top_authors': {},
-                'posts_last_7_days': 0
-            })
-        
-        conn.close()
-        return stats
-        
-    except Exception as e:
-        print(f"PostgreSQL 통계 조회 오류: {e}")
-        return {
-            'total_posts': 0,
-            'total_iocs': 0,
-            'total_relationships': 0,
-            'posts_by_source': {},
-            'posts_by_threat_type': {},
-            'iocs_by_type': {},
-            'top_authors': {},
-            'posts_last_7_days': 0
-        }
+
 def save_postgresql_data(normalized_data: List[Dict]) -> Dict:
     """PostgreSQL용 데이터 저장 함수"""
     try:
@@ -631,64 +593,39 @@ async def upload_json_data(
 @app.post("/api/v1/data/upload/bulk", response_model=ProcessingResponse)
 async def upload_bulk_data(data: BulkThreatData):
     """
-    A파트, B파트에서 JSON 데이터를 직접 POST로 전송
+    A파트, B파트에서 JSON 데이터를 직접 POST로 전송 (파이프라인 코드 사용)
     """
     try:
-        #소스 타입 검증 
+        # 소스 타입 검증 
         valid_sources = ['darkweb', 'telegram', 'misp']
         if data.source not in valid_sources:
             raise HTTPException(status_code=400, detail=f"지원되지 않는 소스 타입: {data.source}")
         
-        # 배치 처리 설정
-        batch_size = 50
         total_items = len(data.data)
-
         logger.info(f"대량 데이터 수신: {total_items}개 항목 (소스: {data.source})")
-        logger.info(f"배치 크기: {batch_size}개씩 처리")
         
-        all_stats = {'saved': 0, 'duplicates': 0, 'errors': 0}
-
-        for i in range(0, total_items, batch_size):
-            batch_data = data.data[i:i + batch_size]
-            logger.info(f"배치 처리 중: {i+1}-{min(i+batch_size, total_items)}/{total_items}")        
-            
-            # 데이터 정제 및 표준화
-            normalized_data = []
-            for item in batch_data:
-                if DB_TYPE == "postgresql":
-                    normalized_item = normalize_postgresql_item(item)
-                else:
-                    normalized_item = normalizer.normalize_single_item(item)
-                
+        # 🔥 파이프라인 코드 그대로 사용 (PostgreSQL/SQLite 자동 선택)
+        normalized_data = []
+        for item in data.data:
+            normalized_item = normalizer.normalize_single_item(item)
+            # source가 명시적으로 전달된 경우에만 덮어쓰기
+            if not normalized_item.get('source_type') or normalized_item.get('source_type') == 'unknown':
                 normalized_item['source_type'] = data.source
-                normalized_data.append(normalized_item)
-            
-            # 데이터베이스에 저장
-            if DB_TYPE == "postgresql":
-                stats = save_postgresql_data(normalized_data)
-            else:
-                stats = normalizer.save_to_database(normalized_data)
-                
-            all_stats['saved'] += stats.get('saved', 0)
-            all_stats['duplicates'] += stats.get('duplicates', 0)
-            all_stats['errors'] += stats.get('errors', 0)
-
-            if i + batch_size < total_items:
-                await asyncio.sleep(2)
-                logger.info(f"배치 휴식 : 2초")
-                
-            logger.info(f"배치 {i // batch_size + 1} 처리 완료: {stats}")
+            normalized_data.append(normalized_item)
         
-        logger.info(f"전체 대량 데이터 처리 완료: {all_stats}")
+        # 데이터베이스에 저장 (SQLite든 PostgreSQL이든 동일하게)
+        stats = normalizer.save_to_database(normalized_data)
+        
+        logger.info(f"대량 데이터 처리 완료: {stats}")
         
         return ProcessingResponse(
             success=True,
             message="데이터 처리 완료",
             processed_count=total_items,
-            new_posts=all_stats.get('saved', 0),
+            new_posts=stats.get('saved', 0),
             related_posts=0,
-            duplicates=all_stats.get('duplicates', 0),
-            errors=all_stats.get('errors', 0)
+            duplicates=stats.get('duplicates', 0),
+            errors=stats.get('errors', 0)
         )
         
     except Exception as e:
@@ -698,19 +635,15 @@ async def upload_bulk_data(data: BulkThreatData):
 @app.post("/api/v1/data/upload/single")
 async def upload_single_data(item: ThreatDataItem):
     """
-    단일 위협정보 데이터 업로드 (테스트용)
+    단일 위협정보 데이터 업로드 (테스트용, 파이프라인 코드 사용)
     """
     try:
         # Pydantic 모델을 딕셔너리로 변환
         item_dict = item.dict()
         
-        # 정제 및 표준화
-        if DB_TYPE == "postgresql":
-            normalized_item = normalize_postgresql_item(item_dict)
-            stats = save_postgresql_data([normalized_item])
-        else:
-            normalized_item = normalizer.normalize_single_item(item_dict)
-            stats = normalizer.save_to_database([normalized_item])
+        # 🔥 파이프라인 코드 사용 (PostgreSQL/SQLite 자동 선택)
+        normalized_item = normalizer.normalize_single_item(item_dict)
+        stats = normalizer.save_to_database([normalized_item])
         
         return {
             "success": True,
@@ -729,13 +662,11 @@ async def upload_single_data(item: ThreatDataItem):
 @app.get("/api/v1/data/stats")
 async def get_database_stats():
     """
-    D파트용 데이터베이스 전체 통계 제공
+    D파트용 데이터베이스 전체 통계 제공 (파이프라인 코드 사용)
     """
     try:
-        if DB_TYPE == "postgresql":
-            stats = get_postgresql_stats()
-        else:
-            stats = normalizer.get_database_stats()
+        # 🔥 파이프라인 코드 사용 (PostgreSQL/SQLite 자동 선택)
+        stats = threat_processor.get_database_statistics()
         return {
             "success": True,
             "data": stats,
@@ -1012,13 +943,11 @@ async def root():
 @app.get("/health")
 async def health_check():
     """
-    헬스 체크
+    헬스 체크 (파이프라인 코드 사용)
     """
     try:
-        if DB_TYPE == "postgresql":
-            stats = get_postgresql_stats()
-        else:
-            stats = normalizer.get_database_stats()
+        # 🔥 파이프라인 코드 사용 (PostgreSQL/SQLite 자동 선택)
+        stats = threat_processor.get_database_statistics()
             
         return {
             "status": "healthy",

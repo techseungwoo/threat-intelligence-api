@@ -22,6 +22,15 @@ class ThreatProcessingSystem:
         self.db_path = db_path
         self.setup_logging()
         
+        # 🔥 PostgreSQL 지원 추가
+        self.DATABASE_URL = os.getenv('DATABASE_URL')
+        if self.DATABASE_URL:
+            self.db_type = "postgresql"
+            print("ThreatProcessingSystem: PostgreSQL 모드")
+        else:
+            self.db_type = "sqlite"
+            print("ThreatProcessingSystem: SQLite 모드")
+    
     def setup_logging(self):
         #로깅 설정
         logging.basicConfig(
@@ -39,15 +48,36 @@ class ThreatProcessingSystem:
         kst = timezone(timedelta(hours=9))
         return datetime.now(kst).strftime('%Y-%m-%d %H:%M:%S')
 
+    def get_db_connection(self):
+        """데이터베이스 연결 (PostgreSQL/SQLite 자동 선택)"""
+        if self.db_type == "postgresql":
+            import psycopg2
+            return psycopg2.connect(self.DATABASE_URL)
+        else:
+            import sqlite3
+            return sqlite3.connect(self.db_path)
     # ==========================================================================
     # 데이터베이스 초기화 및 스키마 설계
     # ==========================================================================
     
     def init_advanced_database(self):
-        #연관관계를 지원하는 고급 데이터베이스 스키마 초기화
-        conn = sqlite3.connect(self.db_path)
+        """PostgreSQL/SQLite 자동 테이블 생성"""
+        conn = self.get_db_connection()
         cursor = conn.cursor()
-        
+    
+        if self.db_type == "postgresql":
+            # PostgreSQL용 테이블 생성
+            self._create_postgresql_tables(cursor)
+        else:
+            # 기존 SQLite 코드 그대로
+            self._create_sqlite_tables(cursor)
+    
+        conn.commit()
+        conn.close()
+        self.logger.info(f"데이터베이스 초기화 완료: {self.db_type}")
+
+    def _create_sqlite_tables(self, cursor):
+        """SQLite용 테이블 생성 (기존 코드)"""
         # 1. 메인 위협정보 게시물 테이블
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS threat_posts (
@@ -142,13 +172,98 @@ class ThreatProcessingSystem:
         for index_sql in indexes:
             try:
                 cursor.execute(index_sql)
-            except sqlite3.OperationalError as e:
+            except Exception as e:
                 if "already exists" not in str(e):
                     self.logger.warning(f"인덱스 생성 실패: {e}")
+
+    def _create_postgresql_tables(self, cursor):
+        """PostgreSQL용 테이블 생성"""
+        # 1. 메인 위협정보 게시물 테이블
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS threat_posts (
+                id TEXT PRIMARY KEY,
+                source_type TEXT,
+                thread_id TEXT,
+                url TEXT,
+                keyword TEXT,
+                found_at TIMESTAMP,
+                title TEXT,
+                text TEXT,
+                author TEXT,
+                date TIMESTAMP,
+                threat_type TEXT,
+                platform TEXT,
+                data_hash TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                event_id TEXT,
+                event_info TEXT,
+                event_date TIMESTAMP
+            )
+        ''')
         
-        conn.commit()
-        conn.close()
-        self.logger.info(f"고급 데이터베이스 스키마 초기화 완료: {self.db_path}")
+        # 2. IOC 테이블
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS threat_iocs (
+                id SERIAL PRIMARY KEY,
+                post_id TEXT NOT NULL,
+                ioc_type TEXT NOT NULL,
+                ioc_value TEXT NOT NULL,
+                context TEXT,
+                confidence REAL DEFAULT 1.0,
+                first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # 3. 연관관계 테이블
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS post_relationships (
+                id SERIAL PRIMARY KEY,
+                post_id_1 TEXT NOT NULL,
+                post_id_2 TEXT NOT NULL,
+                relationship_type TEXT NOT NULL,
+                similarity_score REAL,
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(post_id_1, post_id_2)
+            )
+        ''')
+        
+        # 4. 통계 테이블
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS processing_statistics (
+                id SERIAL PRIMARY KEY,
+                batch_id TEXT,
+                source_files TEXT,
+                total_input INTEGER,
+                new_posts INTEGER,
+                related_posts INTEGER,
+                duplicate_posts INTEGER,
+                error_count INTEGER,
+                processing_time_seconds REAL,
+                processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # PostgreSQL용 인덱스 생성
+        indexes = [
+            "CREATE INDEX IF NOT EXISTS idx_threat_posts_source_type ON threat_posts(source_type)",
+            "CREATE INDEX IF NOT EXISTS idx_threat_posts_threat_type ON threat_posts(threat_type)",
+            "CREATE INDEX IF NOT EXISTS idx_threat_posts_author ON threat_posts(author)",
+            "CREATE INDEX IF NOT EXISTS idx_threat_posts_found_at ON threat_posts(found_at)",
+            "CREATE INDEX IF NOT EXISTS idx_threat_posts_data_hash ON threat_posts(data_hash)",
+            "CREATE INDEX IF NOT EXISTS idx_threat_iocs_value ON threat_iocs(ioc_value)",
+            "CREATE INDEX IF NOT EXISTS idx_threat_iocs_type ON threat_iocs(ioc_type)",
+            "CREATE INDEX IF NOT EXISTS idx_threat_iocs_post_id ON threat_iocs(post_id)",
+            "CREATE INDEX IF NOT EXISTS idx_post_relationships_post1 ON post_relationships(post_id_1)",
+            "CREATE INDEX IF NOT EXISTS idx_post_relationships_post2 ON post_relationships(post_id_2)"
+        ]
+        
+        for index_sql in indexes:
+            try:
+                cursor.execute(index_sql)
+            except Exception as e:
+                if "already exists" not in str(e):
+                    self.logger.warning(f"인덱스 생성 실패: {e}")
 
     # ==========================================================================
     # IOC(위협지표) 추출 시스템
@@ -589,11 +704,11 @@ class ThreatProcessingSystem:
         return stats
     
     def find_similar_existing_posts(self, new_data: Dict, new_iocs: Dict, 
-                                   similarity_threshold: float = 0.8,
-                                   ioc_difference_threshold: float = 0.3,
-                                   days_back: int = 30) -> List[Tuple[str, float]]:
+                               similarity_threshold: float = 0.8,
+                               ioc_difference_threshold: float = 0.3,
+                               days_back: int = 30) -> List[Tuple[str, float]]:
         """
-        새 데이터와 유사한 기존 게시물 검색
+        새 데이터와 유사한 기존 게시물 검색 (PostgreSQL/SQLite 자동 선택)
         
         Args:
             new_data: 새로운 게시물 데이터
@@ -605,19 +720,29 @@ class ThreatProcessingSystem:
         Returns:
             (게시물_ID, 유사도_점수) 튜플 리스트
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = self.get_db_connection()
         cursor = conn.cursor()
         
         try:
             # 같은 소스 타입의 최근 게시물들 조회 (성능 최적화)
-            cursor.execute('''
-                SELECT id, title, text, author, found_at FROM threat_posts 
-                WHERE source_type = ? 
-                AND created_at > datetime('now', '-{} days')
-                AND author = ?
-                ORDER BY created_at DESC
-                LIMIT 200
-            '''.format(days_back), (new_data.get('source_type', ''), new_data.get('author', '')))
+            if self.db_type == "postgresql":
+                cursor.execute('''
+                    SELECT id, title, text, author, found_at FROM threat_posts 
+                    WHERE source_type = %s 
+                    AND created_at > CURRENT_TIMESTAMP - INTERVAL %s
+                    AND author = %s
+                    ORDER BY created_at DESC
+                    LIMIT 200
+                ''', (new_data.get('source_type', ''), f'{days_back} days', new_data.get('author', '')))
+            else:
+                cursor.execute('''
+                    SELECT id, title, text, author, found_at FROM threat_posts 
+                    WHERE source_type = ? 
+                    AND created_at > datetime('now', '-{} days')
+                    AND author = ?
+                    ORDER BY created_at DESC
+                    LIMIT 200
+                '''.format(days_back), (new_data.get('source_type', ''), new_data.get('author', '')))
             
             existing_posts = cursor.fetchall()
             self.logger.info(f"비교 대상 게시물: {len(existing_posts)}개")
@@ -656,9 +781,9 @@ class ThreatProcessingSystem:
             conn.close()
     
     def save_new_post_with_relations(self, data: Dict, iocs: Dict, 
-                                   similar_posts: List[Tuple[str, float]]) -> Optional[str]:
+                               similar_posts: List[Tuple[str, float]]) -> Optional[str]:
         """
-        연관관계와 함께 새 게시물 저장
+        연관관계와 함께 새 게시물 저장 (PostgreSQL/SQLite 자동 선택)
         
         Args:
             data: 게시물 데이터
@@ -668,7 +793,7 @@ class ThreatProcessingSystem:
         Returns:
             저장된 게시물 ID (성공시) 또는 None (실패시)
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = self.get_db_connection()
         cursor = conn.cursor()
         
         try:
@@ -676,20 +801,38 @@ class ThreatProcessingSystem:
             import uuid
             post_id = str(uuid.uuid4())
             data_hash = self.generate_data_hash(data)
-            local_time = self.get_local_time()
 
-            cursor.execute('''
-                INSERT INTO threat_posts 
-                (id, source_type, thread_id, url, keyword, found_at, title, text, 
-                 author, date, threat_type, platform, data_hash, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                post_id, data.get('source_type', ''), data.get('thread_id', ''), 
-                data.get('url', ''), data.get('keyword', ''), data.get('found_at', ''),
-                data.get('title', ''), data.get('text', ''), data.get('author', ''),
-                data.get('date', ''), data.get('threat_type', ''), data.get('platform', ''),
-                data_hash, local_time
-            ))
+            if self.db_type == "postgresql":
+                # PostgreSQL 문법
+                cursor.execute('''
+                    INSERT INTO threat_posts 
+                    (id, source_type, thread_id, url, keyword, found_at, title, text, 
+                    author, date, threat_type, platform, data_hash, event_id, event_info, event_date)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ''', (
+                    post_id, data.get('source_type', ''), data.get('thread_id', ''), 
+                    data.get('url', ''), data.get('keyword', ''), data.get('found_at', ''),
+                    data.get('title', ''), data.get('text', ''), data.get('author', ''),
+                    data.get('date', ''), data.get('threat_type', ''), data.get('platform', ''),
+                    data_hash, data.get('event_id', ''), data.get('event_info', ''), 
+                    data.get('event_date', '')
+                ))
+            else:
+                # SQLite 문법
+                local_time = self.get_local_time()
+                cursor.execute('''
+                    INSERT INTO threat_posts 
+                    (id, source_type, thread_id, url, keyword, found_at, title, text, 
+                    author, date, threat_type, platform, data_hash, created_at, event_id, event_info, event_date)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    post_id, data.get('source_type', ''), data.get('thread_id', ''), 
+                    data.get('url', ''), data.get('keyword', ''), data.get('found_at', ''),
+                    data.get('title', ''), data.get('text', ''), data.get('author', ''),
+                    data.get('date', ''), data.get('threat_type', ''), data.get('platform', ''),
+                    data_hash, local_time, data.get('event_id', ''), data.get('event_info', ''), 
+                    data.get('event_date', '')
+                ))
             
             # 2. IOC 정보 저장
             self.save_post_iocs(cursor, post_id, iocs)
@@ -702,16 +845,29 @@ class ThreatProcessingSystem:
                 else:
                     pid1, pid2 = similar_post_id, post_id
                 
-                cursor.execute('''
-                    INSERT OR IGNORE INTO post_relationships 
-                    (post_id_1, post_id_2, relationship_type, similarity_score, description)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (
-                    pid1, pid2, 
-                    'similar_content_different_ioc', 
-                    similarity_score,
-                    f"유사한 내용이지만 서로 다른 IOC를 포함하는 게시물들"
-                ))
+                if self.db_type == "postgresql":
+                    cursor.execute('''
+                        INSERT INTO post_relationships 
+                        (post_id_1, post_id_2, relationship_type, similarity_score, description)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (post_id_1, post_id_2) DO NOTHING
+                    ''', (
+                        pid1, pid2, 
+                        'similar_content_different_ioc', 
+                        similarity_score,
+                        f"유사한 내용이지만 서로 다른 IOC를 포함하는 게시물들"
+                    ))
+                else:
+                    cursor.execute('''
+                        INSERT OR IGNORE INTO post_relationships 
+                        (post_id_1, post_id_2, relationship_type, similarity_score, description)
+                        VALUES (?, ?, ?, ?, ?)
+                    ''', (
+                        pid1, pid2, 
+                        'similar_content_different_ioc', 
+                        similarity_score,
+                        f"유사한 내용이지만 서로 다른 IOC를 포함하는 게시물들"
+                    ))
             
             conn.commit()
             self.logger.info(f"연관관계 포함 게시물 저장 완료: {post_id} (연관: {len(similar_posts)}개)")
@@ -726,36 +882,54 @@ class ThreatProcessingSystem:
     
     def save_new_post(self, data: Dict, iocs: Dict) -> Optional[str]:
         """
-        독립적인 새 게시물 저장
-        
+        독립적인 새 게시물 저장 (PostgreSQL/SQLite 자동 선택)
+    
         Args:
             data: 게시물 데이터
             iocs: 추출된 IOC 정보
-            
+        
         Returns:
             저장된 게시물 ID (성공시) 또는 None (실패시)
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = self.get_db_connection()
         cursor = conn.cursor()
-        
+    
         try:
             import uuid
             post_id = str(uuid.uuid4())
             data_hash = self.generate_data_hash(data)
-            local_time = self.get_local_time()
-
-            cursor.execute('''
-                INSERT INTO threat_posts 
-                (id, source_type, thread_id, url, keyword, found_at, title, text, 
-                 author, date, threat_type, platform, data_hash, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                post_id, data.get('source_type', ''), data.get('thread_id', ''), 
-                data.get('url', ''), data.get('keyword', ''), data.get('found_at', ''),
-                data.get('title', ''), data.get('text', ''), data.get('author', ''),
-                data.get('date', ''), data.get('threat_type', ''), data.get('platform', ''),
-                data_hash, local_time
-            ))
+        
+            if self.db_type == "postgresql":
+                # PostgreSQL 문법 (%s 사용)
+                cursor.execute('''
+                    INSERT INTO threat_posts 
+                    (id, source_type, thread_id, url, keyword, found_at, title, text, 
+                    author, date, threat_type, platform, data_hash, event_id, event_info, event_date)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ''', (
+                    post_id, data.get('source_type', ''), data.get('thread_id', ''), 
+                    data.get('url', ''), data.get('keyword', ''), data.get('found_at', ''),
+                    data.get('title', ''), data.get('text', ''), data.get('author', ''),
+                    data.get('date', ''), data.get('threat_type', ''), data.get('platform', ''),
+                    data_hash, data.get('event_id', ''), data.get('event_info', ''), 
+                    data.get('event_date', '')
+                ))
+            else:
+                # SQLite 문법 (? 사용, 기존 방식)
+                local_time = self.get_local_time()
+                cursor.execute('''
+                    INSERT INTO threat_posts 
+                    (id, source_type, thread_id, url, keyword, found_at, title, text, 
+                    author, date, threat_type, platform, data_hash, created_at, event_id, event_info, event_date)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    post_id, data.get('source_type', ''), data.get('thread_id', ''), 
+                    data.get('url', ''), data.get('keyword', ''), data.get('found_at', ''),
+                    data.get('title', ''), data.get('text', ''), data.get('author', ''),
+                    data.get('date', ''), data.get('threat_type', ''), data.get('platform', ''),
+                    data_hash, local_time, data.get('event_id', ''), data.get('event_info', ''), 
+                    data.get('event_date', '')
+                ))
             
             # IOC 정보 저장
             self.save_post_iocs(cursor, post_id, iocs)
@@ -834,7 +1008,7 @@ class ThreatProcessingSystem:
     
     def is_exact_duplicate(self, data: Dict) -> bool:
         """
-        완전 중복 데이터 체크
+        완전 중복 데이터 체크 (PostgreSQL/SQLite 자동 선택)
         
         Args:
             data: 체크할 데이터
@@ -844,18 +1018,21 @@ class ThreatProcessingSystem:
         """
         data_hash = self.generate_data_hash(data)
         
-        conn = sqlite3.connect(self.db_path)
+        conn = self.get_db_connection()
         cursor = conn.cursor()
         
-        cursor.execute('SELECT COUNT(*) FROM threat_posts WHERE data_hash = ?', (data_hash,))
-        count = cursor.fetchone()[0]
+        if self.db_type == "postgresql":
+            cursor.execute('SELECT COUNT(*) FROM threat_posts WHERE data_hash = %s', (data_hash,))
+        else:
+            cursor.execute('SELECT COUNT(*) FROM threat_posts WHERE data_hash = ?', (data_hash,))
         
+        count = cursor.fetchone()[0]
         conn.close()
         return count > 0
     
     def get_post_iocs(self, post_id: str) -> Dict[str, List[Dict]]:
         """
-        특정 게시물의 IOC 정보 조회
+        특정 게시물의 IOC 정보 조회 (PostgreSQL/SQLite 자동 선택)
         
         Args:
             post_id: 게시물 ID
@@ -863,13 +1040,19 @@ class ThreatProcessingSystem:
         Returns:
             IOC 딕셔너리 (extract_threat_indicators와 동일한 형태)
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = self.get_db_connection()
         cursor = conn.cursor()
         
-        cursor.execute('''
-            SELECT ioc_type, ioc_value, context FROM threat_iocs 
-            WHERE post_id = ?
-        ''', (post_id,))
+        if self.db_type == "postgresql":
+            cursor.execute('''
+                SELECT ioc_type, ioc_value, context FROM threat_iocs 
+                WHERE post_id = %s
+            ''', (post_id,))
+        else:
+            cursor.execute('''
+                SELECT ioc_type, ioc_value, context FROM threat_iocs 
+                WHERE post_id = ?
+            ''', (post_id,))
         
         ioc_records = cursor.fetchall()
         conn.close()
@@ -1122,12 +1305,12 @@ class ThreatProcessingSystem:
     
     def get_database_statistics(self) -> Dict:
         """
-        데이터베이스 전체 통계 조회
+        데이터베이스 전체 통계 조회 (PostgreSQL/SQLite 자동 선택)
         
         Returns:
             통계 정보 딕셔너리
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = self.get_db_connection()
         cursor = conn.cursor()
         
         try:
@@ -1167,10 +1350,16 @@ class ThreatProcessingSystem:
             stats['top_authors'] = dict(cursor.fetchall())
             
             # 최근 활동 통계 (7일)
-            cursor.execute('''
-                SELECT COUNT(*) FROM threat_posts 
-                WHERE created_at > datetime('now', '-7 days')
-            ''')
+            if self.db_type == "postgresql":
+                cursor.execute('''
+                    SELECT COUNT(*) FROM threat_posts 
+                    WHERE created_at > CURRENT_TIMESTAMP - INTERVAL '7 days'
+                ''')
+            else:
+                cursor.execute('''
+                    SELECT COUNT(*) FROM threat_posts 
+                    WHERE created_at > datetime('now', '-7 days')
+                ''')
             stats['posts_last_7_days'] = cursor.fetchone()[0]
             
             return stats
@@ -1636,15 +1825,20 @@ class MultiFormatThreatNormalizer:
             return {'saved': 0, 'errors': 0}
     
         try:
-            # ThreatProcessingSystem의 저장 메서드 호출
-            stats = self.threat_processor.save_with_relationship_detection(normalized_data)
+            # 🔥 PostgreSQL 지원 추가
+            if os.getenv('DATABASE_URL'):
+                # PostgreSQL 환경
+                return self.save_to_postgresql(normalized_data)
+            else:
+                # SQLite 환경 (기존 방식)
+                stats = self.threat_processor.save_with_relationship_detection(normalized_data)
         
-            self.logger.info(f"데이터베이스 저장 완료: {stats}")
-            return {
-                'saved': stats.get('inserted', 0) + stats.get('related_created', 0),
-                'duplicates': stats.get('exact_duplicates', 0),
-                'errors': stats.get('errors', 0)
-            }
+                self.logger.info(f"데이터베이스 저장 완료: {stats}")
+                return {
+                    'saved': stats.get('inserted', 0) + stats.get('related_created', 0),
+                    'duplicates': stats.get('exact_duplicates', 0),
+                    'errors': stats.get('errors', 0)
+                }
         
         except Exception as e:
             self.logger.error(f"데이터베이스 저장 오류: {e}")
