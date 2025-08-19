@@ -405,23 +405,44 @@ async def get_recent_threats(limit: int = 100, source_type: str = None):
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        if source_type:
-            cursor.execute('''
-                SELECT id, title, text, author, found_at, source_type, threat_type, 
-                        event_id, event_info
-                FROM threat_posts 
-                WHERE source_type = ?
-                ORDER BY created_at DESC 
-                LIMIT ?
-            ''', (source_type, limit))
+        if DB_TYPE == "postgresql":
+            # PostgreSQL용 쿼리 (%s 사용)
+            if source_type:
+                cursor.execute('''
+                    SELECT id, title, text, author, found_at, source_type, threat_type, 
+                            event_id, event_info
+                    FROM threat_posts 
+                    WHERE source_type = %s
+                    ORDER BY created_at DESC 
+                    LIMIT %s
+                ''', (source_type, limit))
+            else:
+                cursor.execute('''
+                    SELECT id, title, text, author, found_at, source_type, threat_type,
+                            event_id, event_info
+                    FROM threat_posts 
+                    ORDER BY created_at DESC 
+                    LIMIT %s
+                ''', (limit,))
         else:
-            cursor.execute('''
-                SELECT id, title, text, author, found_at, source_type, threat_type,
-                        event_id, event_info
-                FROM threat_posts 
-                ORDER BY created_at DESC 
-                LIMIT ?
-            ''', (limit,))
+            # SQLite용 쿼리 (? 사용)
+            if source_type:
+                cursor.execute('''
+                    SELECT id, title, text, author, found_at, source_type, threat_type, 
+                            event_id, event_info
+                    FROM threat_posts 
+                    WHERE source_type = ?
+                    ORDER BY created_at DESC 
+                    LIMIT ?
+                ''', (source_type, limit))
+            else:
+                cursor.execute('''
+                    SELECT id, title, text, author, found_at, source_type, threat_type,
+                            event_id, event_info
+                    FROM threat_posts 
+                    ORDER BY created_at DESC 
+                    LIMIT ?
+                ''', (limit,))
         
         posts = cursor.fetchall()
         conn.close()
