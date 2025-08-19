@@ -1196,7 +1196,7 @@ async def renormalize_existing_data():
 
 @app.post("/api/v1/admin/extract-iocs")
 async def extract_iocs_for_existing_data():
-    """기존 데이터에서 IOC 추출 및 저장"""
+    """기존 데이터에서 IOC 추출 및 저장 - 쿼리 오류 수정"""
     try:
         if DB_TYPE != "postgresql":
             raise HTTPException(status_code=400, detail="PostgreSQL 환경에서만 지원됩니다")
@@ -1206,13 +1206,12 @@ async def extract_iocs_for_existing_data():
         ioc_count = 0
         
         with conn.cursor() as cursor:
-            # IOC가 없는 게시물들 조회
+            # 🔥 수정된 쿼리: DISTINCT 제거, 간단하게 변경
             cursor.execute('''
-                SELECT DISTINCT p.id, p.title, p.text 
-                FROM threat_posts p
-                LEFT JOIN threat_iocs i ON p.id = i.post_id
-                WHERE i.post_id IS NULL
-                ORDER BY p.created_at DESC
+                SELECT id, title, text
+                FROM threat_posts
+                ORDER BY created_at DESC
+                LIMIT 50
             ''')
             
             posts = cursor.fetchall()
@@ -1222,21 +1221,53 @@ async def extract_iocs_for_existing_data():
                 try:
                     processed_count += 1
                     
+                    # 중복 방지: 이미 IOC가 있는지 확인
+                    cursor.execute('SELECT COUNT(*) FROM threat_iocs WHERE post_id = %s', (post_id,))
+                    existing_count = cursor.fetchone()[0]
+                    
+                    if existing_count > 0:
+                        logger.info(f"게시물 {post_id}: 이미 IOC 존재, 건너뜀")
+                        continue
+                    
                     # 🔥 파이프라인으로 IOC 추출
                     iocs = threat_processor.extract_threat_indicators(text or '', title or '')
                     
-                    # IOC 저장
-                    threat_processor.save_post_iocs(cursor, post_id, iocs)
+                    # IOC를 직접 저장 (PostgreSQL용)
+                    ioc_type_mapping = {
+                        'emails': 'email_address',
+                        'ips': 'ip_address', 
+                        'domains': 'domain',
+                        'urls': 'url',
+                        'file_hashes': 'file_hash',
+                        'crypto_addresses': 'crypto_address',
+                        'leaked_accounts': 'leaked_account',
+                        'phone_numbers': 'phone_number',
+                        'personal_names': 'personal_name'  
+                    }
                     
-                    # IOC 개수 계산
-                    post_ioc_count = sum(len(ioc_list) for ioc_list in iocs.values())
+                    post_ioc_count = 0
+                    for ioc_category, db_type in ioc_type_mapping.items():
+                        for ioc_item in iocs.get(ioc_category, []):
+                            cursor.execute('''
+                                INSERT INTO threat_iocs (post_id, ioc_type, ioc_value, context, confidence)
+                                VALUES (%s, %s, %s, %s, %s)
+                            ''', (
+                                post_id, 
+                                db_type, 
+                                ioc_item['value'], 
+                                ioc_item.get('context', ''),
+                                1.0
+                            ))
+                            post_ioc_count += 1
+                    
                     ioc_count += post_ioc_count
                     
                     if post_ioc_count > 0:
                         logger.info(f"게시물 {post_id}: {post_ioc_count}개 IOC 추출")
                     
-                    # 진행상황 출력
+                    # 배치 커밋 (10개마다)
                     if processed_count % 10 == 0:
+                        conn.commit()
                         logger.info(f"IOC 추출 진행상황: {processed_count}/{len(posts)} ({ioc_count}개 IOC)")
                         
                 except Exception as e:
