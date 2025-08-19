@@ -75,27 +75,29 @@ def get_postgresql_stats():
     """PostgreSQL용 통계 조회"""
     try:
         conn = get_db_connection()
-        cursor = conn.cursor()
         
-        stats = {}
-        
-        # 기본 통계
-        cursor.execute("SELECT COUNT(*) FROM threat_posts")
-        stats['total_posts'] = cursor.fetchone()[0]
-        
-        # 소스별 분포
-        cursor.execute("SELECT source_type, COUNT(*) FROM threat_posts GROUP BY source_type")
-        stats['posts_by_source'] = dict(cursor.fetchall())
-        
-        # 기본값 설정
-        stats.update({
-            'total_iocs': 0,
-            'total_relationships': 0,
-            'posts_by_threat_type': {},
-            'iocs_by_type': {},
-            'top_authors': {},
-            'posts_last_7_days': 0
-        })
+        # PostgreSQL은 with문 사용
+        with conn.cursor() as cursor:
+            stats = {}
+            
+            # 기본 통계
+            cursor.execute("SELECT COUNT(*) FROM threat_posts")
+            result = cursor.fetchone()
+            stats['total_posts'] = result[0] if result else 0
+            
+            # 소스별 분포
+            cursor.execute("SELECT source_type, COUNT(*) FROM threat_posts GROUP BY source_type")
+            stats['posts_by_source'] = dict(cursor.fetchall())
+            
+            # 기본값 설정
+            stats.update({
+                'total_iocs': 0,
+                'total_relationships': 0,
+                'posts_by_threat_type': {},
+                'iocs_by_type': {},
+                'top_authors': {},
+                'posts_last_7_days': 0
+            })
         
         conn.close()
         return stats
@@ -112,7 +114,6 @@ def get_postgresql_stats():
             'top_authors': {},
             'posts_last_7_days': 0
         }
-
 def init_postgresql_tables():
     """PostgreSQL 테이블 초기화"""
 
