@@ -374,7 +374,7 @@ def search_postgresql_author(author: str, limit: int = 100) -> List[Dict]:
 
 async def export_as_sqlite():
     """
-    PostgreSQL 데이터를 SQLite 파일로 변환
+    PostgreSQL 데이터를 대시보드용 SQLite 파일로 변환 (컬럼명 최적화)
     """
     try:
         import tempfile
@@ -385,7 +385,7 @@ async def export_as_sqlite():
         sqlite_conn = sqlite3.connect(sqlite_file)
         sqlite_cursor = sqlite_conn.cursor()
         
-        # SQLite 테이블 생성 (기존 구조와 동일)
+        # 대시보드가 기대하는 정확한 테이블 구조 생성
         sqlite_cursor.execute('''
             CREATE TABLE threat_posts (
                 id TEXT PRIMARY KEY,
@@ -408,16 +408,30 @@ async def export_as_sqlite():
             )
         ''')
         
+        # 🔥 중요: 대시보드가 기대하는 post_id 컬럼명 사용
+        sqlite_cursor.execute('''
+            CREATE TABLE threat_iocs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                post_id TEXT NOT NULL,              -- 대시보드가 기대하는 컬럼명
+                ioc_type TEXT NOT NULL,
+                ioc_value TEXT NOT NULL,
+                context TEXT,
+                confidence REAL DEFAULT 1.0,
+                first_seen TIMESTAMP
+            )
+        ''')
+        
         # PostgreSQL에서 데이터 조회
         pg_conn = get_db_connection()
         pg_cursor = pg_conn.cursor()
         
+        # 게시물 데이터 조회 (NULL 값 처리)
         pg_cursor.execute('''
             SELECT id, 
                    COALESCE(source_type, 'unknown') as source_type,
-                   COALESCE(id, '') as thread_id,
+                   COALESCE(thread_id, id) as thread_id,
                    COALESCE(url, '') as url,
-                   COALESCE(keyword, 'N/A') as keyword,
+                   COALESCE(keyword, '') as keyword,
                    COALESCE(found_at, created_at) as found_at,
                    COALESCE(title, 'No Title') as title,
                    COALESCE(text, '') as text,
@@ -425,7 +439,7 @@ async def export_as_sqlite():
                    COALESCE(date, created_at) as date,
                    COALESCE(threat_type, 'General') as threat_type,
                    COALESCE(platform, source_type) as platform,
-                   COALESCE(id, '') as data_hash,
+                   COALESCE(data_hash, '') as data_hash,
                    created_at,
                    COALESCE(event_id, '') as event_id,
                    COALESCE(event_info, '') as event_info,
@@ -434,16 +448,35 @@ async def export_as_sqlite():
             ORDER BY created_at DESC
         ''')
         
-        # SQLite에 데이터 삽입
-        rows = pg_cursor.fetchall()
-        for row in rows:
+        # SQLite에 게시물 데이터 삽입
+        posts_rows = pg_cursor.fetchall()
+        for row in posts_rows:
             sqlite_cursor.execute('''
                 INSERT INTO threat_posts VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ''', row)
+        
+        # IOC 데이터 조회 및 삽입
+        pg_cursor.execute('''
+            SELECT post_id, ioc_type, ioc_value, 
+                   COALESCE(context, '') as context,
+                   COALESCE(confidence, 1.0) as confidence,
+                   COALESCE(first_seen, CURRENT_TIMESTAMP) as first_seen
+            FROM threat_iocs
+            ORDER BY first_seen DESC
+        ''')
+        
+        iocs_rows = pg_cursor.fetchall()
+        for row in iocs_rows:
+            sqlite_cursor.execute('''
+                INSERT INTO threat_iocs (post_id, ioc_type, ioc_value, context, confidence, first_seen)
+                VALUES (?,?,?,?,?,?)
             ''', row)
         
         pg_conn.close()
         sqlite_conn.commit()
         sqlite_conn.close()
+        
+        logger.info(f"대시보드용 SQLite 생성 완료: {len(posts_rows)}개 게시물, {len(iocs_rows)}개 IOC")
         
         # SQLite 파일 다운로드 제공
         return FileResponse(
@@ -453,8 +486,101 @@ async def export_as_sqlite():
         )
         
     except Exception as e:
-        print(f"SQLite 변환 오류: {e}")
+        logger.error(f"SQLite 변환 오류: {e}")
         raise HTTPException(status_code=500, detail=f"SQLite 변환 오류: {str(e)}")        
+
+async def create_dashboard_compatible_sqlite():
+    """
+    SQLite 환경에서 대시보드 호환성을 위한 SQLite 파일 생성
+    """
+    try:
+        import tempfile
+        import sqlite3
+        
+        # 임시 파일 생성
+        temp_db = f"/tmp/dashboard_compatible_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+        
+        # 원본 DB에서 데이터 읽기
+        source_conn = sqlite3.connect(DB_PATH)
+        target_conn = sqlite3.connect(temp_db)
+        
+        source_cursor = source_conn.cursor()
+        target_cursor = target_conn.cursor()
+        
+        # 대시보드용 테이블 구조 생성
+        target_cursor.execute('''
+            CREATE TABLE threat_posts (
+                id TEXT PRIMARY KEY,
+                source_type TEXT,
+                thread_id TEXT,
+                url TEXT,
+                keyword TEXT,
+                found_at TIMESTAMP,
+                title TEXT,
+                text TEXT,
+                author TEXT,
+                date TIMESTAMP,
+                threat_type TEXT,
+                platform TEXT,
+                data_hash TEXT,
+                created_at TIMESTAMP,
+                event_id TEXT,
+                event_info TEXT,
+                event_date TIMESTAMP
+            )
+        ''')
+        
+        target_cursor.execute('''
+            CREATE TABLE threat_iocs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                post_id TEXT NOT NULL,
+                ioc_type TEXT NOT NULL,
+                ioc_value TEXT NOT NULL,
+                context TEXT,
+                confidence REAL DEFAULT 1.0,
+                first_seen TIMESTAMP
+            )
+        ''')
+        
+        # 데이터 복사
+        source_cursor.execute("SELECT * FROM threat_posts")
+        posts = source_cursor.fetchall()
+        
+        # 컬럼 개수에 따라 적절히 처리
+        for post in posts:
+            if len(post) >= 17:  # 모든 컬럼이 있는 경우
+                target_cursor.execute('''
+                    INSERT INTO threat_posts VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ''', post)
+            else:  # 일부 컬럼이 없는 경우 기본값으로 채움
+                padded_post = list(post) + [''] * (17 - len(post))
+                target_cursor.execute('''
+                    INSERT INTO threat_posts VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ''', padded_post[:17])
+        
+        # IOC 데이터 복사
+        source_cursor.execute("SELECT post_id, ioc_type, ioc_value, context, confidence, first_seen FROM threat_iocs")
+        iocs = source_cursor.fetchall()
+        
+        for ioc in iocs:
+            target_cursor.execute('''
+                INSERT INTO threat_iocs (post_id, ioc_type, ioc_value, context, confidence, first_seen)
+                VALUES (?,?,?,?,?,?)
+            ''', ioc)
+        
+        source_conn.close()
+        target_conn.commit()
+        target_conn.close()
+        
+        return FileResponse(
+            temp_db,
+            media_type='application/octet-stream',
+            filename=f"threat_db_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+        )
+        
+    except Exception as e:
+        logger.error(f"대시보드 호환 SQLite 생성 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"파일 생성 오류: {str(e)}")
 
 def init_postgresql_tables():
     """PostgreSQL 테이블 초기화한다"""
@@ -797,13 +923,12 @@ async def export_database():
             return await export_as_sqlite()
         
         if os.path.exists(DB_PATH):
-            return FileResponse(
-                DB_PATH,
-                media_type='application/octet-stream',
-                filename=f"threat_db_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
-            )
+            # 대시보드 호환성을 위한 SQLite 파일 생성
+            return await create_dashboard_compatible_sqlite()
         else:
             raise HTTPException(status_code=404, detail="데이터베이스 파일이 없습니다")
+            
+        
     
     except Exception as e:
         logger.error(f"DB 내보내기 오류: {e}")
@@ -1319,6 +1444,101 @@ async def fix_source_types():
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"source_type 수정 오류: {str(e)}")
+    
+
+@app.get("/api/v1/dashboard/test")
+async def test_dashboard_compatibility():
+    """
+    대시보드 호환성 테스트
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # 테이블 존재 여부 확인
+        if DB_TYPE == "postgresql":
+            cursor.execute("""
+                SELECT table_name FROM information_schema.tables 
+                WHERE table_schema = 'public' AND table_name IN ('threat_posts', 'threat_iocs')
+            """)
+        else:
+            cursor.execute("""
+                SELECT name FROM sqlite_master 
+                WHERE type='table' AND name IN ('threat_posts', 'threat_iocs')
+            """)
+        
+        tables = [row[0] for row in cursor.fetchall()]
+        
+        # 컬럼 정보 확인
+        posts_columns = []
+        iocs_columns = []
+        
+        if 'threat_posts' in tables:
+            if DB_TYPE == "postgresql":
+                cursor.execute("""
+                    SELECT column_name FROM information_schema.columns 
+                    WHERE table_name = 'threat_posts' ORDER BY ordinal_position
+                """)
+            else:
+                cursor.execute("PRAGMA table_info(threat_posts)")
+            posts_columns = [row[1] if DB_TYPE == "sqlite" else row[0] for row in cursor.fetchall()]
+        
+        if 'threat_iocs' in tables:
+            if DB_TYPE == "postgresql":
+                cursor.execute("""
+                    SELECT column_name FROM information_schema.columns 
+                    WHERE table_name = 'threat_iocs' ORDER BY ordinal_position
+                """)
+            else:
+                cursor.execute("PRAGMA table_info(threat_iocs)")
+            iocs_columns = [row[1] if DB_TYPE == "sqlite" else row[0] for row in cursor.fetchall()]
+        
+        # 데이터 개수 확인
+        cursor.execute("SELECT COUNT(*) FROM threat_posts")
+        posts_count = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM threat_iocs")
+        iocs_count = cursor.fetchone()[0]
+        
+        conn.close()
+        
+        # 대시보드 필수 컬럼 체크
+        required_posts_columns = ['id', 'title', 'author', 'date', 'platform', 'threat_type', 'keyword']
+        required_iocs_columns = ['post_id', 'ioc_type', 'ioc_value', 'context', 'first_seen']
+        
+        missing_posts_columns = [col for col in required_posts_columns if col not in posts_columns]
+        missing_iocs_columns = [col for col in required_iocs_columns if col not in iocs_columns]
+        
+        compatibility_score = 100
+        if missing_posts_columns:
+            compatibility_score -= len(missing_posts_columns) * 10
+        if missing_iocs_columns:
+            compatibility_score -= len(missing_iocs_columns) * 15
+        
+        return {
+            "success": True,
+            "db_type": DB_TYPE,
+            "tables_found": tables,
+            "posts_columns": posts_columns,
+            "iocs_columns": iocs_columns,
+            "data_counts": {
+                "posts": posts_count,
+                "iocs": iocs_count
+            },
+            "compatibility": {
+                "score": max(0, compatibility_score),
+                "missing_posts_columns": missing_posts_columns,
+                "missing_iocs_columns": missing_iocs_columns,
+                "dashboard_ready": len(missing_posts_columns) == 0 and len(missing_iocs_columns) == 0
+            }
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "db_type": DB_TYPE
+        }
 # =============================================================================
 # 서버 실행 스크립트
 # =============================================================================

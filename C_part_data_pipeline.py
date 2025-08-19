@@ -177,45 +177,45 @@ class ThreatProcessingSystem:
                     self.logger.warning(f"인덱스 생성 실패: {e}")
 
     def _create_postgresql_tables(self, cursor):
-        """PostgreSQL용 테이블 생성 (SQLite와 완전히 동일한 구조)"""
+        """PostgreSQL용 테이블 생성 (대시보드 호환성 확보)"""
         
-        # 기존 테이블에 누락된 컬럼들 추가
-        alter_queries = [
-            "ALTER TABLE threat_posts ADD COLUMN IF NOT EXISTS thread_id TEXT",
-            "ALTER TABLE threat_posts ADD COLUMN IF NOT EXISTS url TEXT", 
-            "ALTER TABLE threat_posts ADD COLUMN IF NOT EXISTS keyword TEXT",
-            "ALTER TABLE threat_posts ADD COLUMN IF NOT EXISTS found_at TIMESTAMP",
-            "ALTER TABLE threat_posts ADD COLUMN IF NOT EXISTS date TIMESTAMP",
-            "ALTER TABLE threat_posts ADD COLUMN IF NOT EXISTS threat_type TEXT",
-            "ALTER TABLE threat_posts ADD COLUMN IF NOT EXISTS platform TEXT",
-            "ALTER TABLE threat_posts ADD COLUMN IF NOT EXISTS data_hash TEXT",
-            "ALTER TABLE threat_posts ADD COLUMN IF NOT EXISTS event_id TEXT",
-            "ALTER TABLE threat_posts ADD COLUMN IF NOT EXISTS event_info TEXT", 
-            "ALTER TABLE threat_posts ADD COLUMN IF NOT EXISTS event_date TIMESTAMP"
-        ]
+        # 1. threat_posts 테이블 생성
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS threat_posts (
+                id TEXT PRIMARY KEY,
+                source_type TEXT,
+                thread_id TEXT,
+                url TEXT,
+                keyword TEXT,
+                found_at TIMESTAMP,
+                title TEXT,
+                text TEXT,
+                author TEXT,
+                date TIMESTAMP,
+                threat_type TEXT,
+                platform TEXT,
+                data_hash TEXT UNIQUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                event_id TEXT,
+                event_info TEXT,
+                event_date TIMESTAMP
+            )
+        ''')
         
-        for query in alter_queries:
-            try:
-                cursor.execute(query)
-            except Exception as e:
-                # 컬럼이 이미 존재하면 무시
-                if "already exists" not in str(e):
-                    self.logger.warning(f"컬럼 추가 실패: {e}")
-        
-        # IOC 테이블
+        # 2. threat_iocs 테이블 생성 (대시보드 호환성 강화)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS threat_iocs (
                 id SERIAL PRIMARY KEY,
-                post_id TEXT NOT NULL,
+                post_id TEXT NOT NULL,              -- 대시보드가 기대하는 컬럼명
                 ioc_type TEXT NOT NULL,
                 ioc_value TEXT NOT NULL,
-                context TEXT,
+                context TEXT DEFAULT '',
                 confidence REAL DEFAULT 1.0,
                 first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
-        # 연관관계 테이블
+        # 3. 나머지 테이블들
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS post_relationships (
                 id SERIAL PRIMARY KEY,
@@ -229,7 +229,6 @@ class ThreatProcessingSystem:
             )
         ''')
         
-        # 통계 테이블
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS processing_statistics (
                 id SERIAL PRIMARY KEY,
@@ -245,18 +244,14 @@ class ThreatProcessingSystem:
             )
         ''')
         
-        # PostgreSQL용 인덱스 생성
+        # 4. 인덱스 생성
         indexes = [
             "CREATE INDEX IF NOT EXISTS idx_threat_posts_source_type ON threat_posts(source_type)",
-            "CREATE INDEX IF NOT EXISTS idx_threat_posts_threat_type ON threat_posts(threat_type)",
             "CREATE INDEX IF NOT EXISTS idx_threat_posts_author ON threat_posts(author)",
-            "CREATE INDEX IF NOT EXISTS idx_threat_posts_found_at ON threat_posts(found_at)",
-            "CREATE INDEX IF NOT EXISTS idx_threat_posts_data_hash ON threat_posts(data_hash)",
-            "CREATE INDEX IF NOT EXISTS idx_threat_iocs_value ON threat_iocs(ioc_value)",
-            "CREATE INDEX IF NOT EXISTS idx_threat_iocs_type ON threat_iocs(ioc_type)",
+            "CREATE INDEX IF NOT EXISTS idx_threat_posts_created_at ON threat_posts(created_at)",
             "CREATE INDEX IF NOT EXISTS idx_threat_iocs_post_id ON threat_iocs(post_id)",
-            "CREATE INDEX IF NOT EXISTS idx_post_relationships_post1 ON post_relationships(post_id_1)",
-            "CREATE INDEX IF NOT EXISTS idx_post_relationships_post2 ON post_relationships(post_id_2)"
+            "CREATE INDEX IF NOT EXISTS idx_threat_iocs_value ON threat_iocs(ioc_value)",
+            "CREATE INDEX IF NOT EXISTS idx_threat_iocs_type ON threat_iocs(ioc_type)"
         ]
         
         for index_sql in indexes:
