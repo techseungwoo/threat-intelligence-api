@@ -10,7 +10,8 @@ import asyncio
 from datetime import datetime, timezone, timedelta
 import logging
 from pathlib import Path
-
+import psycopg2
+from urllib.parse import urlparse
 # 기존 데이터 처리 시스템 import
 from C_part_data_pipeline import MultiFormatThreatNormalizer, ThreatProcessingSystem
 
@@ -35,19 +36,89 @@ app.add_middleware(
 )
 
 # 글로벌 변수 초기화 - 기존 파이프라인과 동일한 DB 사용
-DB_PATH = os.getenv('DB_PATH', './persistent/threat_intelligence.db')
+# 🔥 DB 연결 방식 자동 감지
+DATABASE_URL = os.getenv('DATABASE_URL')  # Railway PostgreSQL
 
-# 🔥 추가: 디렉토리 생성
-persistent_dir = os.path.dirname(DB_PATH)
-os.makedirs(persistent_dir, exist_ok=True)
-print(f"데이터베이스 경로: {DB_PATH}")
-print(f"영구 저장소 디렉토리 생성: {persistent_dir}")
+if DATABASE_URL:
+    # PostgreSQL 사용 (Railway 환경)
+    print("PostgreSQL 사용 (Railway)")
+    DB_TYPE = "postgresql"
+    DB_PATH = None  # PostgreSQL에서는 사용 안함
+else:
+    # SQLite 사용 (로컬 환경)
+    print("SQLite 사용 (로컬)")
+    DB_TYPE = "sqlite"
+    DB_PATH = 'threat_intelligence.db'
 
-normalizer = MultiFormatThreatNormalizer(
-    output_folder='api_processed_data',
-    db_path=DB_PATH
-)
-threat_processor = ThreatProcessingSystem(DB_PATH)
+# 🔥 DB별 초기화
+if DB_TYPE == "postgresql":
+    # PostgreSQL용 - 임시로 None 설정 (나중에 수정)
+    normalizer = None
+    threat_processor = None
+else:
+    # SQLite용 - 기존 방식
+    normalizer = MultiFormatThreatNormalizer(
+        output_folder='api_processed_data',
+        db_path=DB_PATH
+    )
+    threat_processor = ThreatProcessingSystem(DB_PATH)
+
+def get_db_connection():
+    """데이터베이스 연결 함수"""
+    if DB_TYPE == "postgresql":
+        return psycopg2.connect(DATABASE_URL)
+    else:
+        import sqlite3
+        return sqlite3.connect(DB_PATH)
+
+def get_postgresql_stats():
+    """PostgreSQL용 통계 조회"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        stats = {}
+        
+        # 기본 통계
+        cursor.execute("SELECT COUNT(*) FROM threat_posts")
+        stats['total_posts'] = cursor.fetchone()[0]
+        
+        # 소스별 분포
+        cursor.execute("SELECT source_type, COUNT(*) FROM threat_posts GROUP BY source_type")
+        stats['posts_by_source'] = dict(cursor.fetchall())
+        
+        # 기본값 설정
+        stats.update({
+            'total_iocs': 0,
+            'total_relationships': 0,
+            'posts_by_threat_type': {},
+            'iocs_by_type': {},
+            'top_authors': {},
+            'posts_last_7_days': 0
+        })
+        
+        conn.close()
+        return stats
+        
+    except Exception as e:
+        print(f"PostgreSQL 통계 조회 오류: {e}")
+        return {
+            'total_posts': 0,
+            'total_iocs': 0,
+            'total_relationships': 0,
+            'posts_by_source': {},
+            'posts_by_threat_type': {},
+            'iocs_by_type': {},
+            'top_authors': {},
+            'posts_last_7_days': 0
+        }
+
+def init_postgresql_tables():
+    """PostgreSQL 테이블 초기화"""
+
+# PostgreSQL 환경에서 테이블 초기화
+if DB_TYPE == "postgresql":
+    init_postgresql_tables()
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -235,7 +306,10 @@ async def get_database_stats():
     D파트용 데이터베이스 전체 통계 제공
     """
     try:
-        stats = normalizer.get_database_stats()
+        if DB_TYPE == "postgresql":
+            stats = get_postgresql_stats()
+        else:
+            stats = normalizer.get_database_stats()
         return {
             "success": True,
             "data": stats,
@@ -285,8 +359,7 @@ async def get_recent_threats(limit: int = 100, source_type: str = None):
     D파트용 최신 위협정보 조회
     """
     try:
-        import sqlite3
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection
         cursor = conn.cursor()
         
         if source_type:
@@ -540,20 +613,28 @@ async def fix_timezone():
 async def create_dummy_data():
     """영구 저장소 테스트용"""
     try:
-        import sqlite3
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()  # 🔥 변경
         cursor = conn.cursor()
         
-        cursor.execute('''
-            INSERT INTO threat_posts 
-            (id, source_type, title, text, author, created_at)
-            VALUES (?, ?, ?, ?, ?, datetime('now', 'localtime'))
-        ''', ('test-persist-001', 'test', 'Persistence Test', 'This data should survive redeployment', 'test_user'))
+        if DB_TYPE == "postgresql":
+            # PostgreSQL용 쿼리
+            cursor.execute('''
+                INSERT INTO threat_posts 
+                (id, source_type, title, text, author, created_at)
+                VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ''', ('test-persist-001', 'test', 'Persistence Test', 'This data should survive redeployment', 'test_user'))
+        else:
+            # SQLite용 쿼리
+            cursor.execute('''
+                INSERT INTO threat_posts 
+                (id, source_type, title, text, author, created_at)
+                VALUES (?, ?, ?, ?, ?, datetime('now', 'localtime'))
+            ''', ('test-persist-001', 'test', 'Persistence Test', 'This data should survive redeployment', 'test_user'))
         
         conn.commit()
         conn.close()
         
-        return {"success": True, "message": "테스트 데이터 생성 완료", "db_path": DB_PATH}
+        return {"success": True, "message": "테스트 데이터 생성 완료", "db_type": DB_TYPE}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
