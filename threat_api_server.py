@@ -1132,6 +1132,22 @@ async def extract_iocs_for_existing_data():
         logger.error(f"IOC 추출 오류: {e}")
         raise HTTPException(status_code=500, detail=f"IOC 추출 오류: {str(e)}")
 
+@app.post("/api/v1/admin/init-database")
+async def init_database_tables():
+    """데이터베이스 테이블 초기화"""
+    try:
+        # 🔥 파이프라인의 초기화 함수 호출
+        threat_processor.init_advanced_database()
+        
+        return {
+            "success": True,
+            "message": "데이터베이스 테이블 초기화 완료"
+        }
+        
+    except Exception as e:
+        logger.error(f"데이터베이스 초기화 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"초기화 오류: {str(e)}")
+
 @app.post("/api/v1/admin/fix-timezone")
 async def fix_timezone():
     """기존 데이터의 시간대를 KST로 수정 (1회성)"""
