@@ -961,6 +961,177 @@ async def health_check():
             "error": str(e),
             "timestamp": get_kst_time()
         }
+
+@app.post("/api/v1/admin/renormalize-data")
+async def renormalize_existing_data():
+    """기존 데이터를 파이프라인에 맞게 재정규화"""
+    try:
+        if DB_TYPE != "postgresql":
+            raise HTTPException(status_code=400, detail="PostgreSQL 환경에서만 지원됩니다")
+        
+        conn = get_db_connection()
+        updated_count = 0
+        processed_count = 0
+        
+        with conn.cursor() as cursor:
+            # 모든 기존 데이터 조회
+            cursor.execute('''
+                SELECT id, title, text, author, source_type, url, keyword, 
+                       found_at, date, threat_type, platform, event_id, event_info, event_date
+                FROM threat_posts 
+                ORDER BY created_at DESC
+            ''')
+            
+            posts = cursor.fetchall()
+            logger.info(f"재정규화 시작: {len(posts)}개 게시물")
+            
+            for post_data in posts:
+                try:
+                    processed_count += 1
+                    post_id, title, text, author, source_type, url, keyword, found_at, date, threat_type, platform, event_id, event_info, event_date = post_data
+                    
+                    # 원본 데이터 구성 (파이프라인이 이해할 수 있는 형태로)
+                    original_item = {
+                        'title': title or '',
+                        'text': text or '',
+                        'author': author or '',
+                        'source_type': source_type or '',
+                        'url': url or '',
+                        'keyword': keyword or '',
+                        'found_at': found_at or '',
+                        'date': date or '',
+                        'threat_type': threat_type or '',
+                        'platform': platform or '',
+                        'event_id': event_id or '',
+                        'event_info': event_info or '',
+                        'event_date': event_date or ''
+                    }
+                    
+                    # 🔥 파이프라인으로 재정규화
+                    normalized_item = normalizer.normalize_single_item(original_item)
+                    
+                    # 변경사항 확인
+                    changes = []
+                    if normalized_item.get('source_type') != source_type:
+                        changes.append(f"source_type: '{source_type}' → '{normalized_item.get('source_type')}'")
+                    if normalized_item.get('title') != title:
+                        changes.append(f"title 정제됨")
+                    if normalized_item.get('text') != text:
+                        changes.append(f"text 정제됨")
+                    
+                    # 변경사항이 있으면 업데이트
+                    if changes:
+                        cursor.execute('''
+                            UPDATE threat_posts 
+                            SET source_type = %s, title = %s, text = %s, author = %s,
+                                url = %s, keyword = %s, found_at = %s, date = %s,
+                                threat_type = %s, platform = %s, event_id = %s,
+                                event_info = %s, event_date = %s
+                            WHERE id = %s
+                        ''', (
+                            normalized_item.get('source_type'),
+                            normalized_item.get('title'),
+                            normalized_item.get('text'),
+                            normalized_item.get('author'),
+                            normalized_item.get('url'),
+                            normalized_item.get('keyword'),
+                            normalized_item.get('found_at'),
+                            normalized_item.get('date'),
+                            normalized_item.get('threat_type'),
+                            normalized_item.get('platform'),
+                            normalized_item.get('event_id'),
+                            normalized_item.get('event_info'),
+                            normalized_item.get('event_date'),
+                            post_id
+                        ))
+                        updated_count += 1
+                        logger.info(f"게시물 {post_id} 재정규화: {', '.join(changes)}")
+                    
+                    # 진행상황 출력
+                    if processed_count % 10 == 0:
+                        logger.info(f"진행상황: {processed_count}/{len(posts)} ({updated_count}개 수정됨)")
+                        
+                except Exception as e:
+                    logger.error(f"개별 게시물 처리 오류 (ID: {post_id}): {e}")
+                    continue
+        
+        conn.commit()
+        conn.close()
+        
+        return {
+            "success": True,
+            "message": f"재정규화 완료: {processed_count}개 처리, {updated_count}개 수정됨",
+            "processed_count": processed_count,
+            "updated_count": updated_count
+        }
+        
+    except Exception as e:
+        logger.error(f"데이터 재정규화 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"재정규화 오류: {str(e)}")
+
+@app.post("/api/v1/admin/extract-iocs")
+async def extract_iocs_for_existing_data():
+    """기존 데이터에서 IOC 추출 및 저장"""
+    try:
+        if DB_TYPE != "postgresql":
+            raise HTTPException(status_code=400, detail="PostgreSQL 환경에서만 지원됩니다")
+        
+        conn = get_db_connection()
+        processed_count = 0
+        ioc_count = 0
+        
+        with conn.cursor() as cursor:
+            # IOC가 없는 게시물들 조회
+            cursor.execute('''
+                SELECT DISTINCT p.id, p.title, p.text 
+                FROM threat_posts p
+                LEFT JOIN threat_iocs i ON p.id = i.post_id
+                WHERE i.post_id IS NULL
+                ORDER BY p.created_at DESC
+            ''')
+            
+            posts = cursor.fetchall()
+            logger.info(f"IOC 추출 시작: {len(posts)}개 게시물")
+            
+            for post_id, title, text in posts:
+                try:
+                    processed_count += 1
+                    
+                    # 🔥 파이프라인으로 IOC 추출
+                    iocs = threat_processor.extract_threat_indicators(text or '', title or '')
+                    
+                    # IOC 저장
+                    threat_processor.save_post_iocs(cursor, post_id, iocs)
+                    
+                    # IOC 개수 계산
+                    post_ioc_count = sum(len(ioc_list) for ioc_list in iocs.values())
+                    ioc_count += post_ioc_count
+                    
+                    if post_ioc_count > 0:
+                        logger.info(f"게시물 {post_id}: {post_ioc_count}개 IOC 추출")
+                    
+                    # 진행상황 출력
+                    if processed_count % 10 == 0:
+                        logger.info(f"IOC 추출 진행상황: {processed_count}/{len(posts)} ({ioc_count}개 IOC)")
+                        
+                except Exception as e:
+                    logger.error(f"IOC 추출 오류 (ID: {post_id}): {e}")
+                    continue
+        
+        conn.commit()
+        conn.close()
+        
+        return {
+            "success": True,
+            "message": f"IOC 추출 완료: {processed_count}개 게시물에서 {ioc_count}개 IOC 추출",
+            "processed_count": processed_count,
+            "ioc_count": ioc_count
+        }
+        
+    except Exception as e:
+        logger.error(f"IOC 추출 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"IOC 추출 오류: {str(e)}")
+
 @app.post("/api/v1/admin/fix-timezone")
 async def fix_timezone():
     """기존 데이터의 시간대를 KST로 수정 (1회성)"""
