@@ -223,12 +223,6 @@ def search_postgresql_author(author: str, limit: int = 100) -> List[Dict]:
         print(f"작성자 검색 오류: {e}")
         return []
 
-1단계: export_as_sqlite 함수 추가
-search_postgresql_author 함수 바로 아래에 추가하세요:
-pythondef search_postgresql_author(author: str, limit: int = 100) -> List[Dict]:
-    # ... 기존 코드 ...
-
-# 🔥 여기에 추가하세요!
 async def export_as_sqlite():
     """
     PostgreSQL 데이터를 SQLite 파일로 변환
@@ -694,11 +688,33 @@ async def process_uploaded_file(file_path: str, source: str, original_filename: 
         logger.info(f"백그라운드 처리 시작: {original_filename}")
         
         if DB_TYPE == "postgresql":
-            # PostgreSQL에서는 백그라운드 파일 처리 미지원
-            logger.warning("PostgreSQL 환경에서는 파일 처리가 제한됩니다")
-            return
+            # 🔥 PostgreSQL용 파일 처리 추가
+            import json
+            
+            # JSON 파일 읽기
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            # 리스트가 아니면 리스트로 변환
+            if isinstance(data, dict):
+                data = [data]
+            elif not isinstance(data, list):
+                logger.error(f"지원되지 않는 JSON 형식: {type(data)}")
+                return
+            
+            # 데이터 정규화 및 저장
+            normalized_data = []
+            for item in data:
+                normalized_item = normalize_postgresql_item(item)
+                normalized_item['source_type'] = source
+                normalized_data.append(normalized_item)
+            
+            # PostgreSQL에 저장
+            stats = save_postgresql_data(normalized_data)
+            logger.info(f"PostgreSQL 백그라운드 처리 완료: {original_filename} - {stats['saved']}개 저장")
+            
         else:
-            # SQLite에서만 파일 처리
+            # SQLite에서만 기존 파일 처리
             result = normalizer.process_file(file_path, save_to_db=True)
             
             if result['status'] == 'SUCCESS':
@@ -711,6 +727,11 @@ async def process_uploaded_file(file_path: str, source: str, original_filename: 
             
     except Exception as e:
         logger.error(f"백그라운드 처리 오류 {original_filename}: {e}")
+        # 오류 발생해도 임시 파일 삭제
+        try:
+            os.unlink(file_path)
+        except:
+            pass
 
 def search_content(query: str, limit: int = 100) -> List[Dict]:
     """
