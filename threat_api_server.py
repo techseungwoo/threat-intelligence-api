@@ -122,6 +122,42 @@ def get_postgresql_stats():
         }
 def init_postgresql_tables():
     """PostgreSQL 테이블 초기화"""
+    if DB_TYPE != "postgresql":
+        return
+        
+    try:
+        conn = get_db_connection()
+        
+        with conn.cursor() as cursor:
+            # threat_posts 테이블 생성
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS threat_posts (
+                    id TEXT PRIMARY KEY,
+                    source_type TEXT,
+                    thread_id TEXT,
+                    url TEXT,
+                    keyword TEXT,
+                    found_at TIMESTAMP,
+                    title TEXT,
+                    text TEXT,
+                    author TEXT,
+                    date TIMESTAMP,
+                    threat_type TEXT,
+                    platform TEXT,
+                    data_hash TEXT UNIQUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    event_id TEXT,
+                    event_info TEXT,
+                    event_date TIMESTAMP
+                )
+            ''')
+        
+        conn.commit()
+        conn.close()
+        print("PostgreSQL 테이블 초기화 완료")
+        
+    except Exception as e:
+        print(f"PostgreSQL 초기화 오류: {e}")
 
 # PostgreSQL 환경에서 테이블 초기화
 if DB_TYPE == "postgresql":
@@ -366,7 +402,7 @@ async def get_recent_threats(limit: int = 100, source_type: str = None):
     D파트용 최신 위협정보 조회
     """
     try:
-        conn = get_db_connection
+        conn = get_db_connection()
         cursor = conn.cursor()
         
         if source_type:
