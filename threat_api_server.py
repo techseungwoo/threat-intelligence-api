@@ -222,7 +222,82 @@ def search_postgresql_author(author: str, limit: int = 100) -> List[Dict]:
     except Exception as e:
         print(f"작성자 검색 오류: {e}")
         return []
+
+1단계: export_as_sqlite 함수 추가
+search_postgresql_author 함수 바로 아래에 추가하세요:
+pythondef search_postgresql_author(author: str, limit: int = 100) -> List[Dict]:
+    # ... 기존 코드 ...
+
+# 🔥 여기에 추가하세요!
+async def export_as_sqlite():
+    """
+    PostgreSQL 데이터를 SQLite 파일로 변환
+    """
+    try:
+        import tempfile
+        import sqlite3
         
+        # 임시 SQLite 파일 생성
+        sqlite_file = f"/tmp/threat_db_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+        sqlite_conn = sqlite3.connect(sqlite_file)
+        sqlite_cursor = sqlite_conn.cursor()
+        
+        # SQLite 테이블 생성 (기존 구조와 동일)
+        sqlite_cursor.execute('''
+            CREATE TABLE threat_posts (
+                id TEXT PRIMARY KEY,
+                source_type TEXT,
+                thread_id TEXT,
+                url TEXT,
+                keyword TEXT,
+                found_at TIMESTAMP,
+                title TEXT,
+                text TEXT,
+                author TEXT,
+                date TIMESTAMP,
+                threat_type TEXT,
+                platform TEXT,
+                data_hash TEXT,
+                created_at TIMESTAMP,
+                event_id TEXT,
+                event_info TEXT,
+                event_date TIMESTAMP
+            )
+        ''')
+        
+        # PostgreSQL에서 데이터 조회
+        pg_conn = get_db_connection()
+        pg_cursor = pg_conn.cursor()
+        
+        pg_cursor.execute('''
+            SELECT id, source_type, '', url, keyword, found_at,
+                   title, text, author, date, threat_type, platform,
+                   '', created_at, event_id, event_info, event_date
+            FROM threat_posts
+        ''')
+        
+        # SQLite에 데이터 삽입
+        rows = pg_cursor.fetchall()
+        for row in rows:
+            sqlite_cursor.execute('''
+                INSERT INTO threat_posts VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ''', row)
+        
+        pg_conn.close()
+        sqlite_conn.commit()
+        sqlite_conn.close()
+        
+        # SQLite 파일 다운로드 제공
+        return FileResponse(
+            sqlite_file,
+            media_type='application/octet-stream',
+            filename=f"threat_db_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+        )
+        
+    except Exception as e:
+        print(f"SQLite 변환 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"SQLite 변환 오류: {str(e)}")        
+
 def init_postgresql_tables():
     """PostgreSQL 테이블 초기화한다"""
     if DB_TYPE != "postgresql":
@@ -591,10 +666,8 @@ async def export_database():
     """
     try:
         if DB_TYPE == "postgresql":
-            raise HTTPException(
-                status_code=400, 
-                detail="PostgreSQL 환경에서는 DB 파일 다운로드를 지원하지 않습니다. 대신 데이터 조회 API를 사용하세요."
-            )
+            # PostgreSQL 데이터베이스를 SQLite로 변환하여 다운로드
+            return await export_as_sqlite()
         
         if os.path.exists(DB_PATH):
             return FileResponse(
@@ -604,6 +677,7 @@ async def export_database():
             )
         else:
             raise HTTPException(status_code=404, detail="데이터베이스 파일이 없습니다")
+    
     except Exception as e:
         logger.error(f"DB 내보내기 오류: {e}")
         raise HTTPException(status_code=500, detail=f"내보내기 오류: {str(e)}")
