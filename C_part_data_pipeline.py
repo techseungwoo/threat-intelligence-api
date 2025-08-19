@@ -177,31 +177,32 @@ class ThreatProcessingSystem:
                     self.logger.warning(f"인덱스 생성 실패: {e}")
 
     def _create_postgresql_tables(self, cursor):
-        """PostgreSQL용 테이블 생성"""
-        # 1. 메인 위협정보 게시물 테이블
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS threat_posts (
-                id TEXT PRIMARY KEY,
-                source_type TEXT,
-                thread_id TEXT,
-                url TEXT,
-                keyword TEXT,
-                found_at TIMESTAMP,
-                title TEXT,
-                text TEXT,
-                author TEXT,
-                date TIMESTAMP,
-                threat_type TEXT,
-                platform TEXT,
-                data_hash TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                event_id TEXT,
-                event_info TEXT,
-                event_date TIMESTAMP
-            )
-        ''')
+        """PostgreSQL용 테이블 생성 (SQLite와 완전히 동일한 구조)"""
         
-        # 2. IOC 테이블
+        # 기존 테이블에 누락된 컬럼들 추가
+        alter_queries = [
+            "ALTER TABLE threat_posts ADD COLUMN IF NOT EXISTS thread_id TEXT",
+            "ALTER TABLE threat_posts ADD COLUMN IF NOT EXISTS url TEXT", 
+            "ALTER TABLE threat_posts ADD COLUMN IF NOT EXISTS keyword TEXT",
+            "ALTER TABLE threat_posts ADD COLUMN IF NOT EXISTS found_at TIMESTAMP",
+            "ALTER TABLE threat_posts ADD COLUMN IF NOT EXISTS date TIMESTAMP",
+            "ALTER TABLE threat_posts ADD COLUMN IF NOT EXISTS threat_type TEXT",
+            "ALTER TABLE threat_posts ADD COLUMN IF NOT EXISTS platform TEXT",
+            "ALTER TABLE threat_posts ADD COLUMN IF NOT EXISTS data_hash TEXT",
+            "ALTER TABLE threat_posts ADD COLUMN IF NOT EXISTS event_id TEXT",
+            "ALTER TABLE threat_posts ADD COLUMN IF NOT EXISTS event_info TEXT", 
+            "ALTER TABLE threat_posts ADD COLUMN IF NOT EXISTS event_date TIMESTAMP"
+        ]
+        
+        for query in alter_queries:
+            try:
+                cursor.execute(query)
+            except Exception as e:
+                # 컬럼이 이미 존재하면 무시
+                if "already exists" not in str(e):
+                    self.logger.warning(f"컬럼 추가 실패: {e}")
+        
+        # IOC 테이블
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS threat_iocs (
                 id SERIAL PRIMARY KEY,
@@ -214,7 +215,7 @@ class ThreatProcessingSystem:
             )
         ''')
         
-        # 3. 연관관계 테이블
+        # 연관관계 테이블
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS post_relationships (
                 id SERIAL PRIMARY KEY,
@@ -228,7 +229,7 @@ class ThreatProcessingSystem:
             )
         ''')
         
-        # 4. 통계 테이블
+        # 통계 테이블
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS processing_statistics (
                 id SERIAL PRIMARY KEY,
@@ -947,15 +948,14 @@ class ThreatProcessingSystem:
     
     def save_post_iocs(self, cursor, post_id: str, iocs: Dict):
         """
-        게시물의 IOC 정보를 데이터베이스에 저장
+        게시물의 IOC 정보를 데이터베이스에 저장 (PostgreSQL/SQLite 자동 선택)
         
         Args:
             cursor: 데이터베이스 커서
             post_id: 게시물 ID
             iocs: IOC 딕셔너리
         """
-        local_time = self.get_local_time()
-
+        
         # IOC 타입 매핑 (내부 키 -> DB 저장용 타입명)
         ioc_type_mapping = {
             'emails': 'email_address',
@@ -972,17 +972,32 @@ class ThreatProcessingSystem:
         ioc_count = 0
         for ioc_category, db_type in ioc_type_mapping.items():
             for ioc_item in iocs.get(ioc_category, []):
-                cursor.execute('''
-                    INSERT INTO threat_iocs (post_id, ioc_type, ioc_value, context, confidence, first_seen)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (
-                    post_id, 
-                    db_type, 
-                    ioc_item['value'], 
-                    ioc_item.get('context', ''),
-                    1.0,  # 기본 신뢰도
-                    local_time
-                ))
+                if self.db_type == "postgresql":
+                    # PostgreSQL 문법
+                    cursor.execute('''
+                        INSERT INTO threat_iocs (post_id, ioc_type, ioc_value, context, confidence, first_seen)
+                        VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                    ''', (
+                        post_id, 
+                        db_type, 
+                        ioc_item['value'], 
+                        ioc_item.get('context', ''),
+                        1.0  # 기본 신뢰도
+                    ))
+                else:
+                    # SQLite 문법
+                    local_time = self.get_local_time()
+                    cursor.execute('''
+                        INSERT INTO threat_iocs (post_id, ioc_type, ioc_value, context, confidence, first_seen)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    ''', (
+                        post_id, 
+                        db_type, 
+                        ioc_item['value'], 
+                        ioc_item.get('context', ''),
+                        1.0,  # 기본 신뢰도
+                        local_time
+                    ))
                 ioc_count += 1
         
         self.logger.debug(f"IOC 저장 완료: {ioc_count}개")
