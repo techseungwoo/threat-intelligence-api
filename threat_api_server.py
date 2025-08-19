@@ -65,11 +65,17 @@ else:
 
 def get_db_connection():
     """데이터베이스 연결 함수"""
-    if DB_TYPE == "postgresql":
-        return psycopg2.connect(DATABASE_URL)
-    else:
-        import sqlite3
-        return sqlite3.connect(DB_PATH)
+    try:
+        if DB_TYPE == "postgresql":
+            if not DATABASE_URL:
+                raise Exception("DATABASE_URL이 설정되지 않음")
+            return psycopg2.connect(DATABASE_URL)
+        else:
+            import sqlite3
+            return sqlite3.connect(DB_PATH)
+    except Exception as e:
+        print(f"DB 연결 오류: {e}")
+        raise e
 
 def get_postgresql_stats():
     """PostgreSQL용 통계 조회"""
@@ -639,6 +645,18 @@ async def create_dummy_data():
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+@app.get("/api/v1/debug/db-status")
+async def debug_db_status():
+    """데이터베이스 연결 상태 확인"""
+    try:
+        return {
+            "DB_TYPE": DB_TYPE,
+            "DATABASE_URL_exists": bool(DATABASE_URL),
+            "DATABASE_URL_start": DATABASE_URL[:20] + "..." if DATABASE_URL else None,
+            "psycopg2_imported": "psycopg2" in globals(),
+        }
+    except Exception as e:
+        return {"error": str(e)}
 # =============================================================================
 # 서버 실행 스크립트
 # =============================================================================
