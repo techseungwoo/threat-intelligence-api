@@ -264,10 +264,25 @@ async def export_as_sqlite():
         pg_cursor = pg_conn.cursor()
         
         pg_cursor.execute('''
-            SELECT id, source_type, '', url, keyword, found_at,
-                   title, text, author, date, threat_type, platform,
-                   '', created_at, event_id, event_info, event_date
+            SELECT id, 
+                   COALESCE(source_type, 'unknown') as source_type,
+                   COALESCE(id, '') as thread_id,
+                   COALESCE(url, '') as url,
+                   COALESCE(keyword, 'N/A') as keyword,
+                   COALESCE(found_at, created_at) as found_at,
+                   COALESCE(title, 'No Title') as title,
+                   COALESCE(text, '') as text,
+                   COALESCE(author, 'Unknown') as author,
+                   COALESCE(date, created_at) as date,
+                   COALESCE(threat_type, 'General') as threat_type,
+                   COALESCE(platform, source_type) as platform,
+                   COALESCE(id, '') as data_hash,
+                   created_at,
+                   COALESCE(event_id, '') as event_id,
+                   COALESCE(event_info, '') as event_info,
+                   COALESCE(event_date, created_at) as event_date
             FROM threat_posts
+            ORDER BY created_at DESC
         ''')
         
         # SQLite에 데이터 삽입
