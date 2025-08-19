@@ -35,7 +35,14 @@ app.add_middleware(
 )
 
 # 글로벌 변수 초기화 - 기존 파이프라인과 동일한 DB 사용
-DB_PATH = 'threat_intelligence.db'  # 기존 파이프라인과 동일
+DB_PATH = os.getenv('DB_PATH', './persistent/threat_intelligence.db')
+
+# 🔥 추가: 디렉토리 생성
+persistent_dir = os.path.dirname(DB_PATH)
+os.makedirs(persistent_dir, exist_ok=True)
+print(f"데이터베이스 경로: {DB_PATH}")
+print(f"영구 저장소 디렉토리 생성: {persistent_dir}")
+
 normalizer = MultiFormatThreatNormalizer(
     output_folder='api_processed_data',
     db_path=DB_PATH
@@ -528,6 +535,28 @@ async def fix_timezone():
     except Exception as e:
         logger.error(f"시간대 수정 오류: {e}")
         raise HTTPException(status_code=500, detail=f"시간대 수정 오류: {str(e)}")
+
+@app.post("/api/v1/test/create-dummy")
+async def create_dummy_data():
+    """영구 저장소 테스트용"""
+    try:
+        import sqlite3
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO threat_posts 
+            (id, source_type, title, text, author, created_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now', 'localtime'))
+        ''', ('test-persist-001', 'test', 'Persistence Test', 'This data should survive redeployment', 'test_user'))
+        
+        conn.commit()
+        conn.close()
+        
+        return {"success": True, "message": "테스트 데이터 생성 완료", "db_path": DB_PATH}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 # =============================================================================
 # 서버 실행 스크립트
 # =============================================================================
