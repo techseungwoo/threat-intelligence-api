@@ -120,6 +120,64 @@ def get_postgresql_stats():
             'top_authors': {},
             'posts_last_7_days': 0
         }
+def save_postgresql_data(normalized_data: List[Dict]) -> Dict:
+    """PostgreSQL용 데이터 저장 함수"""
+    try:
+        conn = get_db_connection()
+        saved_count = 0
+        
+        with conn.cursor() as cursor:
+            for item in normalized_data:
+                try:
+                    # 중복 체크
+                    cursor.execute("SELECT COUNT(*) FROM threat_posts WHERE id = %s", (item.get('thread_id', ''),))
+                    if cursor.fetchone()[0] > 0:
+                        continue
+                    
+                    # 데이터 삽입
+                    cursor.execute('''
+                        INSERT INTO threat_posts 
+                        (id, source_type, title, text, author, created_at)
+                        VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                    ''', (
+                        item.get('thread_id', f"auto-{saved_count}"),
+                        item.get('source_type', ''),
+                        item.get('title', ''),
+                        item.get('text', ''),
+                        item.get('author', '')
+                    ))
+                    saved_count += 1
+                except Exception as e:
+                    print(f"개별 데이터 저장 오류: {e}")
+                    continue
+        
+        conn.commit()
+        conn.close()
+        
+        return {'saved': saved_count, 'duplicates': 0, 'errors': 0}
+        
+    except Exception as e:
+        print(f"PostgreSQL 데이터 저장 오류: {e}")
+        return {'saved': 0, 'duplicates': 0, 'errors': 1}
+
+def normalize_postgresql_item(item: Dict) -> Dict:
+    """PostgreSQL용 데이터 정규화 함수"""
+    return {
+        'thread_id': item.get('id') or item.get('thread_id') or f"auto-{hash(str(item))}",
+        'source_type': item.get('source_type', ''),
+        'title': str(item.get('title', '')).strip(),
+        'text': str(item.get('text', '')).strip(),
+        'author': str(item.get('author', '')).strip(),
+        'url': str(item.get('url', '')).strip(),
+        'keyword': str(item.get('keyword', '')).strip(),
+        'found_at': item.get('found_at', ''),
+        'date': item.get('date', ''),
+        'threat_type': item.get('threat_type', ''),
+        'platform': item.get('platform', ''),
+        'event_id': item.get('event_id', ''),
+        'event_info': item.get('event_info', ''),
+        'event_date': item.get('event_date', '')
+    }    
 def init_postgresql_tables():
     """PostgreSQL 테이블 초기화"""
     if DB_TYPE != "postgresql":
@@ -261,15 +319,15 @@ async def upload_bulk_data(data: BulkThreatData):
     """
     try:
         #소스 타입 검증 
-        valid_sources = ['darkweb', 'telegram', 'misp']  #misp 추가
+        valid_sources = ['darkweb', 'telegram', 'misp']
         if data.source not in valid_sources:
             raise HTTPException(status_code=400, detail=f"지원되지 않는 소스 타입: {data.source}")
         
-        # 🔥 대량 데이터를 작은 배치로 나누기
-        batch_size = 50  # 한 번에 50개씩만 처리
+        # 배치 처리 설정
+        batch_size = 50
         total_items = len(data.data)
 
-        logger.info(f"대량 데이터 수신: {len(data.data)}개 항목 (소스: {data.source})")
+        logger.info(f"대량 데이터 수신: {total_items}개 항목 (소스: {data.source})")
         logger.info(f"배치 크기: {batch_size}개씩 처리")
         
         all_stats = {'saved': 0, 'duplicates': 0, 'errors': 0}
@@ -281,13 +339,20 @@ async def upload_bulk_data(data: BulkThreatData):
             # 데이터 정제 및 표준화
             normalized_data = []
             for item in batch_data:
-                normalized_item = normalizer.normalize_single_item(item)
-                # 소스 타입 강제 설정 (A파트: darkweb, B파트: telegram)
+                if DB_TYPE == "postgresql":
+                    normalized_item = normalize_postgresql_item(item)
+                else:
+                    normalized_item = normalizer.normalize_single_item(item)
+                
                 normalized_item['source_type'] = data.source
                 normalized_data.append(normalized_item)
             
-            # 데이터베이스에 저장 (연관관계 분석 포함)
-            stats = normalizer.save_to_database(normalized_data)
+            # 데이터베이스에 저장
+            if DB_TYPE == "postgresql":
+                stats = save_postgresql_data(normalized_data)
+            else:
+                stats = normalizer.save_to_database(normalized_data)
+                
             all_stats['saved'] += stats.get('saved', 0)
             all_stats['duplicates'] += stats.get('duplicates', 0)
             all_stats['errors'] += stats.get('errors', 0)
@@ -588,7 +653,11 @@ async def health_check():
     헬스 체크
     """
     try:
-        stats = normalizer.get_database_stats()
+        if DB_TYPE == "postgresql":
+            stats = get_postgresql_stats()
+        else:
+            stats = normalizer.get_database_stats()
+            
         return {
             "status": "healthy",
             "database": "connected",
@@ -722,7 +791,10 @@ if __name__ == "__main__":
     import uvicorn
     
     # 데이터베이스 초기화 코드
-    threat_processor.init_advanced_database()
+    if DB_TYPE == "postgresql":
+        init_postgresql_tables()
+    else:
+        threat_processor.init_advanced_database()
     
     print("=== 위협정보 데이터 정제 API 서버 ===")
     print("A파트(다크웹), B파트(텔레그램) → C파트(정제) → D파트(대시보드)")
