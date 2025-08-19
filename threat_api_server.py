@@ -224,7 +224,7 @@ def search_postgresql_author(author: str, limit: int = 100) -> List[Dict]:
         return []
         
 def init_postgresql_tables():
-    """PostgreSQL 테이블 초기화"""
+    """PostgreSQL 테이블 초기화한다"""
     if DB_TYPE != "postgresql":
         return
         
