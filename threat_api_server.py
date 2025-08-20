@@ -886,7 +886,7 @@ async def get_recent_threats(limit: int = 100, source_type: str = None):
             result_item = {  
                 "id": post[0],
                 "title": post[1],
-                "text": post[2][:200] + "..." if len(post[2]) > 200 else post[2],
+                "text": (post[2] or "")[:200] + "..." if len(post[2] or "") > 200 else (post[2] or ""),
                 "author": post[3],
                 "found_at": post[4],
                 "source_type": post[5],
